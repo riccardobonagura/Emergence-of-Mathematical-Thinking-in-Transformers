@@ -1,0 +1,26 @@
+model_name: "pythia-1.4b"
+seed: 42
+train_split: 0.80
+n_permutation_tests: 1000  # Aumentato per rigore scientifico
+bootstrap_n_samples: 1000 # Aumentato per intervalli stabili
+bootstrap_ci: 0.95
+max_iter: 1000
+C: 1.0
+solver: "lbfgs"
+multiclass_strategy: "ovr"
+n_jobs: -1                 # Usa tutti i core della workstation
+
+properties:
+  parity:
+    type: "binary"
+    label_field: "parity"
+    class_names: ["even", "odd"]
+  sign:
+    type: "binary"
+    label_field: "sign"
+    class_names: ["positive", "negative"]
+  # Aggiungi altre proprietà se presenti in stimuli.jsonl
+
+output_dir: "results/probing"
+figures_dir: "results/figures/rq2"
+eval_subset_size: 200
