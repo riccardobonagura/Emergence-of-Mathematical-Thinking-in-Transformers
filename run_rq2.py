@@ -13,10 +13,10 @@ from pathlib import Path
 from joblib import Parallel, delayed
 
 # Import dei componenti dell'architettura SOLID
-from src.utils.probing.io import MetadataHandler, setup_logging, load_hidden_states, save_weights, _atomic_write_csv, _atomic_write_json
-from src.utils.probing.dataset import ProbingDataset
-from src.utils.probing.engine import ProbingEngine
-from src.utils.probing.directions import cosine_similarity, angle_degrees
+from src.probing.io_utils import MetadataHandler, setup_logging, load_hidden_states, save_weights, _atomic_write_csv, _atomic_write_json
+from src.probing.probing_dataset import ProbingDataset
+from src.probing.engine import ProbingEngine
+from src.probing.directions import cosine_similarity, angle_degrees
 import src.viz.probing_viz as viz
 
 def process_task(layer_idx, prop_name, model_dir, engine, train_idx, test_idx, y_train, y_test, output_dir):
@@ -38,7 +38,7 @@ def process_task(layer_idx, prop_name, model_dir, engine, train_idx, test_idx, y
 
 def main():
     parser = argparse.ArgumentParser(description="SOLID Probing Orchestrator")
-    parser.add_argument("--config", type=str, required=True, help="Path al file config.yaml")
+    parser.add_argument("--config", type=str, required=True, default="configs/config.yaml", help="Path al file config.yaml")
     args = parser.parse_args()
 
     # 1. SETUP AMBIENTE
@@ -59,7 +59,7 @@ def main():
     stimuli_ids = meta.get_stimuli_ids()
     
     # ProbingDataset gestisce allineamento ID, undersampling e split
-    dataset = ProbingDataset(Path("data/stimuli/stimuli.jsonl"), stimuli_ids)
+    dataset = ProbingDataset(Path("data/raw/stimuli_arithmetic_v2.jsonl"), stimuli_ids)
     
     # 3. ENGINE LAYER (SOLID)
     # ProbingEngine incapsula la logica di training e validazione statistica
@@ -99,22 +99,37 @@ def main():
         }
     _atomic_write_json(output_dir / "emergence_summary.json", emergence_data)
 
-    # Analisi Ortogonalità (Similarità Coseno tra pesi)
+  # Analisi Ortogonalità (Similarità Coseno tra pesi)
     logger.info("Analisi delle direzioni semantiche...")
     angle_results = []
     binary_props = [p for p, c in config["properties"].items() if c["type"] == "binary"]
     
+    # Estrarre d_model direttamente da un peso qualsiasi (assumiamo che il primo layer/prop sia valido)
+    # per avere un riferimento sulla dimensionalità corretta dello spazio latente.
+    d_model = meta.get_d_model(default=2048) # Usiamo il d_model dai metadati
+
     for l in range(n_layers):
         for i, p_a in enumerate(binary_props):
             for p_b in binary_props[i+1:]:
                 # Caricamento pesi salvati dai worker
-                w_a = np.load(output_dir / "weights" / f"layer_{l:02d}_{p_a}.npy")
-                w_b = np.load(output_dir / "weights" / f"layer_{l:02d}_{p_b}.npy")
-                cos_sim = cosine_similarity(w_a, w_b)
-                angle_results.append({
-                    "layer": l, "property_a": p_a, "property_b": p_b,
-                    "cosine_similarity": cos_sim, "angle_degrees": angle_degrees(cos_sim)
-                })
+                wa_path = output_dir / "weights" / f"layer_{l:02d}_{p_a}.npy"
+                wb_path = output_dir / "weights" / f"layer_{l:02d}_{p_b}.npy"
+                
+                if wa_path.exists() and wb_path.exists():
+                    w_a = np.load(wa_path)
+                    w_b = np.load(wb_path)
+                    
+                    # --- FIX DIMENSIONALE ---
+                    # Scartiamo il calcolo se uno dei classificatori è inaspettatamente diventato multiclasse (size > d_model)
+                    if w_a.size != d_model or w_b.size != d_model:
+                         logger.debug(f"Skip ortogonalità {p_a} vs {p_b} al layer {l}: Shape mismatch (w_a:{w_a.size}, w_b:{w_b.size})")
+                         continue
+                         
+                    cos_sim = cosine_similarity(w_a, w_b)
+                    angle_results.append({
+                        "layer": l, "property_a": p_a, "property_b": p_b,
+                        "cosine_similarity": cos_sim, "angle_degrees": angle_degrees(cos_sim)
+                    })
     
     if angle_results:
         angles_df = pd.DataFrame(angle_results)

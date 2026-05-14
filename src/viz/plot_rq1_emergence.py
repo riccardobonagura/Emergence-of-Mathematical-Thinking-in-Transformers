@@ -11,8 +11,8 @@ from pathlib import Path
 
 def plot_rq1_dashboard():
     # Setup percorsi
-    RESULTS_DIR = Path("results/rq1")
-    OUT_DIR = Path("results/figures")
+    RESULTS_DIR = Path("results/rq1_emergence")
+    OUT_DIR = Path("results/figures/rq1_emergence")
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     
     # 1. Caricamento Dati

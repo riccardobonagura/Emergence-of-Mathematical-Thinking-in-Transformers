@@ -21,6 +21,6 @@ properties:
     class_names: ["positive", "negative"]
   # Aggiungi altre proprietà se presenti in stimuli.jsonl
 
-output_dir: "results/probing"
-figures_dir: "results/figures/rq2"
+output_dir: "results/rq2_probing"
+figures_dir: "results/figures/rq2_probing"
 eval_subset_size: 200

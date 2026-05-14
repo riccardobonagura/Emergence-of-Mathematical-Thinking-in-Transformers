@@ -3,7 +3,7 @@ Logic Layer: Motore di addestramento e validazione statistica.
 """
 import numpy as np
 from .pipeline import build_pipeline, denormalize_classifier
-from .metrics import bootstrap_ci
+from .stats import bootstrap_ci
 from .seeds import get_seed
 
 class ProbingEngine:

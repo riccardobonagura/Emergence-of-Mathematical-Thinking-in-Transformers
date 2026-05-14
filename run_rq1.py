@@ -9,14 +9,14 @@ import numpy as np
 from pathlib import Path
 
 # Importiamo le utility che hai già preparato
-from utils.geometry import run_isotropy_analysis
-from utils.metrics import compute_cka_intercategory_all_layers
+from src.metrics.isotropy import run_isotropy_analysis
+from src.metrics.cka import compute_cka_intercategory_all_layers, linear_cka
 
 def main():
     # Setup delle directory in linea con l'architettura
     PROC_DIR = Path("data/processed/pythia-1.4b")
-    STIMULI_PATH = Path("data/raw/stimuli_arithmetic_v2.jsonl") # Assicurati che il nome combaci col generatore
-    RESULTS_DIR = Path("results/rq1")
+    STIMULI_PATH = Path("data/raw/stimuli_arithmetic_v2.jsonl") 
+    RESULTS_DIR = Path("results/rq1_emergence")
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     
     # Check dipendenze dati (Fase 1 e Fase 2 concluse)
@@ -54,7 +54,7 @@ def main():
         print(f"Categorie rilevate: {np.unique(categories)}")
     else:
         print("\n2. Calcolo CKA Evolutiva (Layer(l) vs Layer(l-1))...")
-        from utils.metrics import linear_cka
+        from src.metrics import cka
 
         cka_math_diff = [1.0] # Al layer 0 la similarità con se stesso è 1
         cka_ctrl_diff = [1.0]
