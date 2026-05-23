@@ -1,50 +1,59 @@
-"""
-Logic Layer: Motore di addestramento e validazione statistica.
-"""
+# engine.py — training, evaluation, and CI computation for one (layer, property) cell.
+# Stateless: all inputs arrive as numpy arrays; all outputs are plain Python scalars + arrays.
+
 import numpy as np
+
 from .pipeline import build_pipeline, denormalize_classifier
-from .stats import bootstrap_ci
-from .seeds import get_seed
+from .stats    import bootstrap_ci
+from .seeds    import get_seed
+
 
 class ProbingEngine:
-    def __init__(self, config: dict):
-        self.config = config
+    """Fits one probe per (layer, property) and returns a result dict."""
 
-    def run_layer(self, X_train, y_train, X_test, y_test, layer_idx, prop_name):
-        """Esegue il fit della pipeline e calcola le metriche di robustezza."""
-        
-        # 1. Costruzione e Training della pipeline
+    def __init__(self, config: dict) -> None:
+        self.cfg = config
+
+    def run_layer(
+        self,
+        X_train: np.ndarray,
+        y_train: np.ndarray,
+        X_test:  np.ndarray,
+        y_test:  np.ndarray,
+        layer_idx: int,
+        prop_name: str,
+    ) -> dict:
+        """Fit → evaluate → denormalise → CI.  Returns a flat result dict."""
+
         pipe = build_pipeline(
-            max_iter=self.config["max_iter"],
-            C=self.config["C"],
-            solver=self.config["solver"],
-            multiclass_strategy=self.config["multiclass_strategy"]
+            max_iter             = self.cfg["max_iter"],
+            C                    = self.cfg["C"],
+            solver               = self.cfg["solver"],
+            multiclass_strategy  = self.cfg["multiclass_strategy"],
         )
         pipe.fit(X_train, y_train)
-        
-        # 2. Valutazione
+
         accuracy = pipe.score(X_test, y_test)
-        y_pred = pipe.predict(X_test)
-        
-        # 3. Denormalizzazione pesi (Algebra lineare per estrarre le direzioni reali)
+        y_pred   = pipe.predict(X_test)
+
+        # Project weights back to the original (unscaled) activation space.
         w_orig, b_orig = denormalize_classifier(pipe)
-        
-        # 4. Calcolo Intervalli di Confidenza (Bootstrap)
-        # FIX: Passiamo esplicitamente 'ci' e 'base_seed' richiesti dai metadati
-        low, up = bootstrap_ci(
-            y_test, 
-            y_pred, 
-            n_samples=self.config["bootstrap_n_samples"],
-            ci=self.config.get("bootstrap_ci", 0.95),
-            base_seed=get_seed(self.config["seed"], "bootstrap", layer_idx)
+
+        # Layer-specific seed keeps bootstrap CIs independent across layers.
+        lo, hi = bootstrap_ci(
+            y_true    = y_test,
+            y_pred    = y_pred,
+            n_samples = self.cfg["bootstrap_n_samples"],
+            ci        = self.cfg.get("bootstrap_ci", 0.95),
+            base_seed = get_seed(self.cfg["seed"], "bootstrap", layer_idx),
         )
-        
+
         return {
-            "layer": layer_idx,
-            "property": prop_name,
-            "accuracy": float(np.round(accuracy, 4)),
-            "accuracy_lower_ci": float(np.round(low, 4)),
-            "accuracy_upper_ci": float(np.round(up, 4)),
-            "weights": w_orig,
-            "bias": b_orig
+            "layer":               layer_idx,
+            "property":            prop_name,
+            "accuracy":            round(float(accuracy), 4),
+            "accuracy_lower_ci":   round(float(lo), 4),
+            "accuracy_upper_ci":   round(float(hi), 4),
+            "weights":             w_orig,
+            "bias":                b_orig,
         }

@@ -1,53 +1,57 @@
-"""Calcolo rigoroso degli intervalli di confidenza e test di permutazione."""
+# pipeline.py — scikit-learn pipeline construction and weight denormalisation.
+# StandardScaler is mandatory: probing accuracy is sensitive to feature scale.
 
 import numpy as np
-from sklearn.base import clone
-from joblib import Parallel, delayed
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import LogisticRegression
 from typing import Tuple
 
-from .seeds import get_seed
 
-def bootstrap_ci(
-    y_true: np.ndarray, y_pred: np.ndarray, 
-    n_samples: int, ci: float, base_seed: int
-) -> Tuple[float, float]:
-    """Bootstrap non parametrico per l'intervallo di confidenza."""
-    rng = np.random.default_rng(base_seed)
-    n_test = len(y_true)
-    accuracies = np.empty(n_samples, dtype=np.float32)
-    
-    for i in range(n_samples):
-        idx = rng.choice(n_test, size=n_test, replace=True)
-        accuracies[i] = np.mean(y_true[idx] == y_pred[idx])
+def build_pipeline(
+    max_iter: int,
+    C: float,
+    solver: str,
+    multiclass_strategy: str,   # kept for API compatibility; ignored for binary tasks
+) -> Pipeline:
+    """Return an unfitted (StandardScaler → LogisticRegression) pipeline.
 
-    lower = np.percentile(accuracies, (1 - ci) / 2 * 100)
-    upper = np.percentile(accuracies, (1 + ci) / 2 * 100)
-    return float(lower), float(upper)
+    v5 note: sign and parity are binary tasks; multi_class is not forwarded
+    to LogisticRegression to avoid the sklearn >= 1.5 deprecation warning.
+    multiclass_strategy is accepted but unused — downstream callers need not change.
+    """
+    return Pipeline([
+        ("scaler", StandardScaler()),
+        ("clf", LogisticRegression(
+            max_iter=max_iter,
+            C=C,
+            solver=solver,
+            # multi_class omitted: deprecated in sklearn >= 1.5, irrelevant for binary
+        )),
+    ])
 
-def _single_permutation(clf, X_train, y_train, X_test, y_test, seed_perm):
-    """Job atomico per singola permutazione."""
-    rng = np.random.default_rng(seed_perm)
-    y_perm = rng.permutation(y_train)
-    clf_clone = clone(clf)
-    clf_clone.fit(X_train, y_perm)
-    return clf_clone.score(X_test, y_test)
 
-def permutation_test_parallel(
-    clf, X_train: np.ndarray, y_train: np.ndarray, 
-    X_test: np.ndarray, y_test: np.ndarray, 
-    actual_accuracy: float, n_permutations: int, 
-    base_seed: int, n_jobs: int = -1
-) -> Tuple[float, float]:
-    """Esegue n_permutations addestramenti parallelizzati su cloni dell'estimatore."""
-    seeds = [get_seed(base_seed, "permutation", i) for i in range(n_permutations)]
-    
-    null_accuracies = Parallel(n_jobs=n_jobs)(
-        delayed(_single_permutation)(clf, X_train, y_train, X_test, y_test, s)
-        for s in seeds
-    )
-    
-    null_accuracies = np.array(null_accuracies)
-    baseline_mean = np.mean(null_accuracies)
-    p_value = np.sum(null_accuracies >= actual_accuracy) / n_permutations
-    
-    return float(baseline_mean), float(p_value)
+def denormalize_classifier(pipe: Pipeline) -> Tuple[np.ndarray, np.ndarray]:
+    """Extract weights and bias in the original (unscaled) hidden-state space.
+
+    Algebra:
+        w_orig = w_norm / σ
+        b_orig = b_norm − w_orig · μ
+    """
+    scaler = pipe.named_steps["scaler"]
+    clf    = pipe.named_steps["clf"]
+
+    w_norm = clf.coef_       # (1, d) binary  |  (n_classes, d) multiclass
+    b_norm = clf.intercept_
+
+    # Track binary case before any reshape to restore shape at the end.
+    is_binary = w_norm.shape[0] == 1
+
+    w_orig = w_norm / scaler.scale_                 # broadcast over rows
+    b_orig = b_norm - np.dot(w_orig, scaler.mean_)  # (n_classes,)
+
+    if is_binary:
+        w_orig = w_orig.ravel()          # (d,)
+        b_orig = float(b_orig[0])        # scalar
+
+    return w_orig.astype(np.float64), np.asarray(b_orig, dtype=np.float64)
