@@ -14,18 +14,27 @@ del codice v4 è stato rimosso perché ridondante e potenzialmente errato
 (equals_sign_index è ora annidato in token_fields, non top-level).
 """
 
+from __future__ import annotations
+
 import json
 import torch
 from pathlib import Path
 from tqdm import tqdm
-from transformer_lens import HookedTransformer
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from transformer_lens import HookedTransformer
 
 def load_stimuli(path: str | Path) -> list[dict]:
     """Carica gli stimoli generati nella Fase 1."""
     with open(path, "r", encoding="utf-8") as f:
         return [json.loads(line) for line in f]
 
-def save_extraction_metadata(stimuli: list[dict], out_dir: Path) -> None:
+def save_extraction_metadata(
+    stimuli: list[dict],
+    out_dir: Path,
+    model: "HookedTransformer",
+) -> None:
     """
     Costruisce e salva la mappatura tra l'indice di riga dei tensori estratti
     e gli ID degli stimoli, vitale per la decodifica (Fase 3).
@@ -39,12 +48,19 @@ def save_extraction_metadata(stimuli: list[dict], out_dir: Path) -> None:
         "categories":  [s["category"] for s in stimuli],   # plurale — v5
         "probe_strategy": "last_token",                     # uniforme in v5
         "dataset_version": stimuli[0].get("dataset_version", "unknown") if stimuli else "unknown",
+        "n_layers":  model.cfg.n_layers,
+        "d_model":   model.cfg.d_model,
+        "n_stimuli": len(stimuli),
+        "labels": {
+            "sign":   [s["labels"].get("sign",   -1) for s in stimuli],
+            "parity": [s["labels"].get("parity", -1) for s in stimuli],
+        },
     }
     with open(out_dir / "metadata.json", "w", encoding="utf-8") as f:
         json.dump(metadata, f, indent=2)
 
 def extract_layer_batched(
-    model: HookedTransformer, 
+    model: "HookedTransformer",
     stimuli: list[dict], 
     layer_idx: int, 
     batch_size: int = 16
@@ -101,6 +117,8 @@ def extract_layer_batched(
     return torch.cat(layer_activations, dim=0)   # [N, d_model]
 
 def main():
+    from transformer_lens import HookedTransformer
+
     # Dataset master v5 (merge di CAT-SIGN, CAT-PARITY, CTRL-NEU, CTRL-NUM)
     DATA_PATH = Path("data/processed/dataset_master_v5.jsonl")
     OUT_DIR   = Path("data/processed/pythia-1.4b")
@@ -122,7 +140,7 @@ def main():
     stimuli  = load_stimuli(DATA_PATH)
     n_layers = model.cfg.n_layers   # 24 per Pythia-1.4B
     
-    save_extraction_metadata(stimuli, OUT_DIR)
+    save_extraction_metadata(stimuli, OUT_DIR, model)
     print(f"Metadata salvati. "
           f"Avvio estrazione per {len(stimuli)} stimoli su {n_layers} layer.")
     

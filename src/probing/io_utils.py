@@ -48,6 +48,28 @@ class MetadataHandler:
             raise ValueError("metadata.json contains no stimuli_ids.")
         return ids
 
+    def get_n_stimuli(self) -> int:
+        """Return total number of stimuli; derived from stimuli_ids if key absent."""
+        if "n_stimuli" in self.data:
+            return int(self.data["n_stimuli"])
+        return len(self.get_stimuli_ids())
+
+    def get_labels(self, field: str) -> np.ndarray:
+        """Return label array parallel to stimuli_ids for the given field.
+
+        Requires enriched metadata (extract_states.py Intervento 2).
+        Raises KeyError when metadata was produced before the enrichment.
+        """
+        labels_block = self.data.get("labels")
+        if labels_block is None:
+            raise KeyError(
+                "metadata.json does not contain a 'labels' block. "
+                "Re-run extract_states.py to produce enriched metadata."
+            )
+        if field not in labels_block:
+            raise KeyError(f"Label field {field!r} not found in metadata labels block.")
+        return np.array(labels_block[field], dtype=np.int32)
+
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 

@@ -593,6 +593,8 @@ if __name__ == "__main__":
     """
     import json
 
+    from src.config.categories import MATH_CATS, CTRL_CATS
+
     # ── Configurazione ───────────────────────────────────────────────────────
     MODEL_NAME  = "pythia-1.4b"    # modello target della tesi
     N_LAYERS    = 24               # Pythia-1.4B ha 24 layer transformer
@@ -640,8 +642,8 @@ if __name__ == "__main__":
 
     # Matematica: stimoli con contrasto aritmetico (sign o parity)
     # Controllo: prosa e numeri in contesto non aritmetico
-    math_mask    = np.isin(categories, ["CAT-SIGN", "CAT-PARITY"])
-    generic_mask = np.isin(categories, ["CTRL-NEU", "CTRL-NUM"])
+    math_mask    = np.isin(categories, list(MATH_CATS))
+    generic_mask = np.isin(categories, list(CTRL_CATS))
 
     math_indices    = np.where(math_mask)[0]
     generic_indices = np.where(generic_mask)[0]

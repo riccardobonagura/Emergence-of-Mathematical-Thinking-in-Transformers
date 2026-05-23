@@ -113,7 +113,7 @@ def test_unit() -> None:
           pair[0].labels.parity == pair[1].labels.parity)
 
     # CAT-PARITY pair: results differ by exactly 1
-    ppair = pg._make_pair("test-0000", 20, 15, "TPL-PAR-1", "{a} + {b} =")
+    ppair = pg._make_pair("test-0000", 20, 14, "TPL-PAR-1", "{a} + {b} =")
     diff = abs(ppair[0].labels.result - ppair[1].labels.result)
     check("CAT-PARITY pair: results differ by 1", diff == 1, f"diff = {diff}")
     check("CAT-PARITY pair: parities are opposite",
@@ -416,6 +416,58 @@ def test_control(tokenizer_name: str, arith_dataset: List[Stimulus]) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# 6. METADATA
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_metadata_completeness() -> None:
+    section("6. METADATA — completeness contract for downstream consumers")
+    # These fields are required by run_rq2, run_rq3, MetadataHandler, and cka.py.
+    REQUIRED_METADATA_KEYS = {
+        "stimuli_ids", "categories", "probe_strategy", "dataset_version",
+        "n_layers", "d_model", "n_stimuli",
+        "labels",    # dict with "sign" and "parity" sub-keys
+    }
+    REQUIRED_LABEL_FIELDS = {"sign", "parity"}
+
+    import json
+    import pathlib
+    import tempfile
+
+    from build_stimuli import SignContrastGenerator
+    from src.extraction.extract_states import save_extraction_metadata
+
+    stims = SignContrastGenerator().build(n_pairs=2, seed=0)
+
+    class _Cfg:
+        n_layers = 4
+        d_model  = 8
+    class _Model:
+        cfg = _Cfg()
+
+    with tempfile.TemporaryDirectory() as td:
+        out = pathlib.Path(td)
+        raw = [s.to_dict() for s in stims]
+        save_extraction_metadata(raw, out, _Model())
+        meta = json.loads((out / "metadata.json").read_text())
+
+    missing_keys = REQUIRED_METADATA_KEYS - meta.keys()
+    check("6a: all required root keys present in metadata",
+          not missing_keys, f"Missing: {missing_keys}")
+
+    if "labels" in meta:
+        missing_label_fields = REQUIRED_LABEL_FIELDS - meta["labels"].keys()
+        check("6b: labels block has sign and parity fields",
+              not missing_label_fields, f"Missing: {missing_label_fields}")
+
+        check("6c: labels arrays parallel to stimuli_ids",
+              len(meta["labels"]["sign"]) == len(meta["stimuli_ids"]) and
+              len(meta["labels"]["parity"]) == len(meta["stimuli_ids"]))
+
+    check("6d: n_stimuli == len(stimuli_ids)",
+          meta.get("n_stimuli") == len(meta.get("stimuli_ids", [])))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Entry point
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -438,6 +490,7 @@ def main() -> None:
     test_statistical(dataset)
     test_roundtrip(dataset, tmp_path)
     test_control(args.tokenizer, dataset)
+    test_metadata_completeness()
 
     total = results["passed"] + results["failed"]
     colour = "\033[92m" if results["failed"] == 0 else "\033[91m"

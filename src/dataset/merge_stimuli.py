@@ -35,6 +35,8 @@ from collections import Counter
 from pathlib import Path
 from typing import Tuple
 
+from src.config.categories import ALL_CATS
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Schema
 # ─────────────────────────────────────────────────────────────────────────────
@@ -53,7 +55,7 @@ REQUIRED_TOKEN_KEYS      = {"n_tokens", "token_ids", "token_strs",
 REQUIRED_CONTRAST_KEYS   = {"pair_id", "varying_axis", "controlled_axes"}
 REQUIRED_EXTRACTION_KEYS = {"sign", "parity"}
 
-VALID_CATEGORIES = {"CAT-SIGN", "CAT-PARITY", "CTRL-NEU", "CTRL-NUM"}
+VALID_CATEGORIES: frozenset[str] = frozenset(ALL_CATS)
 VALID_SPLITS     = {"geometric_eval"}
 
 

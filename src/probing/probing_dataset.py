@@ -21,13 +21,30 @@ import logging
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Literal, Tuple, TypedDict
 
 from sklearn.model_selection import train_test_split
 
 from .seeds import get_seed
 
 log = logging.getLogger(__name__)
+
+
+class PropConfig(TypedDict, total=False):
+    """Schema for a single probe property configuration.
+
+    Required fields:
+        label_field: name of the label in stimulus["labels"] (e.g. "sign", "parity").
+        category:    dataset category to filter on. Use None to disable filtering
+                     (risks cross-category contamination — see module docstring).
+
+    Optional fields:
+        type:        "binary" (default) or "multiclass". Used by run_rq2/rq3 to
+                     determine inference method. In v5 all probes are binary.
+    """
+    label_field: str
+    category:    str | None    # required but typed as possibly None
+    type:        Literal["binary", "multiclass"]
 
 
 class ProbingDataset:
@@ -44,7 +61,7 @@ class ProbingDataset:
     def get_property_split(
         self,
         prop_name: str,
-        prop_cfg: Dict[str, Any],
+        prop_cfg:  PropConfig,
         train_split: float,
         global_seed: int,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -62,13 +79,13 @@ class ProbingDataset:
 
     def _load(self) -> pd.DataFrame:
         # Load JSONL once; labels column stays as dict for .get() access.
-        records = [json.loads(l) for l in open(self.stimuli_path)]
+        records = [json.loads(l) for l in open(self.stimuli_path, encoding="utf-8")]
         return pd.DataFrame(records)
 
     def _extract(
         self,
         prop_name: str,
-        prop_cfg: Dict[str, Any],
+        prop_cfg:  PropConfig,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Filter by category (when specified) then align ids to tensor indices."""
         label_field  = prop_cfg["label_field"]

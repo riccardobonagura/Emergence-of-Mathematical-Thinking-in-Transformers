@@ -1,0 +1,42 @@
+# config_template.yaml — canonical configuration for run_rq2.py and run_rq3.py.
+# Copy to configs/config.yaml and fill in the values marked with <...>.
+
+# ── Identificatori ────────────────────────────────────────────────────────────
+model_name:  "pythia-1.4b"           # Must match data/processed/<model_name>/
+
+# ── Directory ────────────────────────────────────────────────────────────────
+output_dir:  "results/rq2_probing"
+figures_dir: "results/figures/rq2"
+
+# ── Probing setup ────────────────────────────────────────────────────────────
+train_split: 0.80
+seed:        42
+n_jobs:      -1                      # joblib: -1 = tutti i core disponibili
+
+# ── Properties to probe ──────────────────────────────────────────────────────
+# Each entry defines one linear probe.
+# label_field: key inside stimulus["labels"] in dataset_master_v5.jsonl
+# category:    dataset category to filter on (prevents cross-category contamination)
+# type:        "binary" | "multiclass" — determines inference in run_rq3.py
+properties:
+  sign:
+    label_field: "sign"
+    category:    "CAT-SIGN"
+    type:        "binary"
+  parity:
+    label_field: "parity"
+    category:    "CAT-PARITY"
+    type:        "binary"
+
+# ── LogisticRegression ───────────────────────────────────────────────────────
+max_iter:            2000
+C:                   1.0
+solver:              "lbfgs"
+multiclass_strategy: "ovr"          # Accepted but unused for binary probes (v5)
+
+# ── Bootstrap CI ─────────────────────────────────────────────────────────────
+bootstrap_n_samples: 2000
+bootstrap_ci:        0.95
+
+# ── RQ3 dynamic evaluation ───────────────────────────────────────────────────
+eval_subset_size:    200             # stimuli sampled for geometric drift
