@@ -240,14 +240,17 @@ def validate_alignment(
 # Pipeline principale
 # ---------------------------------------------------------------------------
 def run_isotropy_analysis(
-    processed_dir: str = "data/processed/phi3-mini",
-    stimuli_path: str = "data/stimuli/stimuli.jsonl",
-    output_path: str = "results/isotropy.csv",
-    n_layers: int = 32,
-    exact_threshold: int = 600,   # usa gram matrix esatta se N_cat <= soglia
-    k_pairs: int = 8000,          # coppie Monte Carlo (solo se N_cat > soglia)
-    n_bootstrap: int = 2000,      # campionamenti bootstrap
-    seed: int = 42,
+    processed_dir: str = "data/processed/pythia-1.4b",
+    stimuli_path: str  = "data/processed/dataset_master_v5.jsonl",
+    output_path: str   = "results/isotropy.csv",
+    n_layers: int      = 24,       # Pythia-1.4B ha 24 layer transformer
+    exact_threshold: int = 1500,   # v5: max stimoli per categoria ≈ 1000
+                                   # gram matrix 1000×1000 ≈ 4 MB → usa esatto
+                                   # per tutte le categorie (era 600 in v4,
+                                   # che causava MC per CAT-* ed esatto per CTRL-*)
+    k_pairs: int       = 8000,     # coppie Monte Carlo (solo se N_cat > soglia)
+    n_bootstrap: int   = 2000,     # campionamenti bootstrap
+    seed: int          = 42,
 ) -> pd.DataFrame:
     """
     Esegue l'analisi di isotropia su tutti i layer del modello.

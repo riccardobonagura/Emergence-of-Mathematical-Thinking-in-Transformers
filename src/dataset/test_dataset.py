@@ -1,17 +1,21 @@
 """
-test_dataset.py
-===============
-Test suite per la Fase 0 del dataset.
-Copre build_stimuli.py e build_control.py.
+test_dataset.py  —  v5
+=======================
+Test suite for the v5 dataset (sign + parity probing, Pythia-1.4B target).
 
-Sezioni:
-  1. UNIT            — correttezza aritmetica e struttura dati
-  2. INTEGRATION     — generazione + tokenizzazione + validate_dataset
-  3. STATISTICAL     — distribuzioni e bilanciamento (aritmetica)
-  4. ROUND-TRIP      — serializzazione JSONL (aritmetica)
-  5. CONTROL         — schema, tier coverage, zero duplicati, compatibilità merge
+Sections
+--------
+  1. UNIT        — arithmetic computation, label assignment
+  2. INTEGRATION — generation + tokenisation + validate_dataset
+  3. STATISTICAL — balance, pair coherence, template distribution
+  4. ROUND-TRIP  — JSONL serialisation / deserialisation
+  5. CONTROL     — schema, length distribution, no duplicates, merge compat
+
+Run
+---
+    python test_dataset.py --tokenizer EleutherAI/pythia-1.4b
+    python test_dataset.py --tokenizer EleutherAI/pythia-1.4b --n_pairs 50
 """
-
 from __future__ import annotations
 
 import argparse
@@ -23,302 +27,421 @@ from typing import List
 
 try:
     from build_stimuli import (
-        CONTRASTS,
-        TEMPLATES,
-        BalancedArithmeticGenerator,
+        DATASET_VERSION,
+        ParityContrastGenerator,
+        SignContrastGenerator,
         Stimulus,
         populate_token_fields,
         validate_dataset,
+        write_jsonl,
     )
 except ImportError as e:
-    print(f"[ERRORE] Impossibile importare build_stimuli: {e}")
+    print(f"[ERROR] Cannot import build_stimuli: {e}")
     sys.exit(1)
 
-# build_control.py sostituisce build_control_neutral.py e build_control_numeric.py.
-# I wrapper backward-compatible espongono la stessa interfaccia funzionale.
 try:
     from build_control import (
         NeutralGenerator,
         NumericGenerator,
         generate_neutral_stimuli,
-        generate_control_stimuli as generate_numeric_stimuli,
+        generate_numeric_stimuli,
+        length_match_to_arithmetic,
     )
 except ImportError as e:
-    print(f"[ERRORE] Impossibile importare build_control: {e}")
+    print(f"[ERROR] Cannot import build_control: {e}")
     sys.exit(1)
 
 try:
     from merge_stimuli import REQUIRED_ROOT_KEYS, validate_schema
 except ImportError as e:
-    print(f"[ERRORE] Impossibile importare merge_stimuli: {e}")
+    print(f"[ERROR] Cannot import merge_stimuli: {e}")
     sys.exit(1)
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Test harness
+# ─────────────────────────────────────────────────────────────────────────────
 
 PASS = "\033[92m✓\033[0m"
 FAIL = "\033[91m✗\033[0m"
 results = {"passed": 0, "failed": 0}
 
-TIERS = ("short", "medium", "long")
-
 
 def check(name: str, condition: bool, detail: str = "") -> bool:
-    if condition:
-        print(f"  {PASS} {name}")
-        results["passed"] += 1
-    else:
-        print(f"  {FAIL} {name}")
-        if detail:
-            print(f"      → {detail}")
-        results["failed"] += 1
+    tag = PASS if condition else FAIL
+    print(f"  {tag} {name}")
+    if not condition and detail:
+        print(f"      → {detail}")
+    results["passed" if condition else "failed"] += 1
     return condition
 
 
 def section(title: str) -> None:
-    print(f"\n{'─'*60}\n  {title}\n{'─'*60}")
+    print(f"\n{'─' * 62}\n  {title}\n{'─' * 62}")
 
 
-# ---------------------------------------------------------------------------
-# Sezione 1 — Unit
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. UNIT
+# ─────────────────────────────────────────────────────────────────────────────
 
 def test_unit() -> None:
-    section("1. UNIT — Correttezza aritmetica e struttura dati")
-    gen = BalancedArithmeticGenerator(min_n=1, max_n=50, seed=0)
+    section("1. UNIT — Arithmetic computation and label assignment")
 
-    for a, op, b, expected in [(8,"+",3,11),(8,"-",3,5),(3,"-",8,-5),(6,"*",4,24),(20,"/",4,5)]:
-        res = gen._compute_result(a, op, b)
-        check(f"_compute_result({a} {op} {b}) == {expected}", res == expected, f"ottenuto {res}")
+    sg = SignContrastGenerator()
+    pg = ParityContrastGenerator()
 
-    lab = gen._make_labels(3, "-", 8)
-    check("sign negativo corretto", lab.sign == 1)
-    check("parity di -5 è dispari", lab.parity == 1)
+    # sign: 0 = non-negative, 1 = negative
+    for a, b, expected_sign in [(20, 7, 0), (7, 20, 1), (15, 15, 0)]:
+        result = a - b
+        got = 1 if result < 0 else 0
+        check(f"sign({a} - {b} = {result}) == {expected_sign}", got == expected_sign,
+              f"got {got}")
+
+    # parity: 0 = even, 1 = odd
+    for x, expected_par in [(20, 0), (21, 1), (0, 0), (99, 1)]:
+        got = abs(x) % 2
+        check(f"parity({x}) == {expected_par}", got == expected_par, f"got {got}")
+
+    # CAT-SIGN pair: |result_A| == |result_B|
+    pair = sg._make_pair("test-0000", 30, 12, "TPL-SIGN-1", "{a} - {b} =")
+    check("CAT-SIGN pair: |result| identical",
+          abs(pair[0].labels.result) == abs(pair[1].labels.result),
+          f"{pair[0].labels.result} vs {pair[1].labels.result}")
+    check("CAT-SIGN pair: signs are opposite",
+          pair[0].labels.sign != pair[1].labels.sign)
+    check("CAT-SIGN pair: parities are identical",
+          pair[0].labels.parity == pair[1].labels.parity)
+
+    # CAT-PARITY pair: results differ by exactly 1
+    ppair = pg._make_pair("test-0000", 20, 15, "TPL-PAR-1", "{a} + {b} =")
+    diff = abs(ppair[0].labels.result - ppair[1].labels.result)
+    check("CAT-PARITY pair: results differ by 1", diff == 1, f"diff = {diff}")
+    check("CAT-PARITY pair: parities are opposite",
+          ppair[0].labels.parity != ppair[1].labels.parity)
+    check("CAT-PARITY pair: signs are both non-negative",
+          ppair[0].labels.sign == 0 and ppair[1].labels.sign == 0)
+
+    # operand_digit_class
+    check("digit_class [10,50] → '2d_2d'",
+          pair[0].operand_digit_class == "2d_2d",
+          f"got {pair[0].operand_digit_class!r}")
+
+    # dataset_version
+    check(f"dataset_version == '{DATASET_VERSION}'",
+          pair[0].dataset_version == DATASET_VERSION)
+
+    # sentinel: no -1 in token_fields
+    check("Unpopulated TokenFields: no -1 sentinel anywhere",
+          pair[0].token_fields.equals_sign_index is None and
+          pair[0].token_fields.last_token_index is None)
 
 
-# ---------------------------------------------------------------------------
-# Sezione 2 — Integration
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+# 2. INTEGRATION
+# ─────────────────────────────────────────────────────────────────────────────
 
-def test_integration(pairs: int, tokenizer_name: str) -> List[Stimulus]:
-    section("2. INTEGRATION — Generazione + tokenizzazione + validate_dataset")
-    gen     = BalancedArithmeticGenerator(min_n=1, max_n=200, seed=42)
-    dataset = gen.build_balanced_dataset(pairs_per_contrast=pairs)
+def test_integration(n_pairs: int, tokenizer_name: str) -> List[Stimulus]:
+    section("2. INTEGRATION — Generation + tokenisation + validate_dataset")
 
-    check("dataset_version == 'v4'", all(s.dataset_version == "v4" for s in dataset))
+    sg = SignContrastGenerator()
+    pg = ParityContrastGenerator()
+    sign_stims = sg.build(n_pairs, seed=42)
+    par_stims  = pg.build(n_pairs, seed=43)
+    all_stims  = sign_stims + par_stims
 
-    print(f"\n  Caricamento tokenizer: {tokenizer_name} ...")
+    check(f"Generated {2 * n_pairs} stimuli per category",
+          len(sign_stims) == 2 * n_pairs and len(par_stims) == 2 * n_pairs)
+    check("All splits are 'geometric_eval'",
+          all(s.split == "geometric_eval" for s in all_stims))
+    check("All operand_digit_class are '2d_2d'",
+          all(s.operand_digit_class == "2d_2d" for s in all_stims))
+    check("probe_layer_strategy == 'all_layers'",
+          all(s.probe_layer_strategy == "all_layers" for s in all_stims))
+
+    print(f"\n  Loading tokenizer: {tokenizer_name} …")
     try:
-        tokenized = populate_token_fields(dataset, tokenizer_name)
-    except Exception as e:
-        check("Tokenizzazione senza errori", False, str(e))
-        return dataset
+        tokenised = populate_token_fields(all_stims, tokenizer_name)
+    except Exception as exc:
+        check("Tokenisation succeeded", False, str(exc))
+        return all_stims
 
-    check("Tutti i n_tokens sono popolati",
-          all(s.token_fields.n_tokens is not None for s in tokenized))
-    check("equals_sign_index trovato per tutti gli stimoli",
-          all(s.token_fields.equals_sign_index >= 0 for s in tokenized))
-    check("operator_token_index trovato per tutti gli stimoli",
-          all(s.token_fields.operator_token_index >= 0 for s in tokenized))
+    check("All n_tokens populated",
+          all(s.token_fields.n_tokens is not None for s in tokenised))
+    check("tokenizer_name stored in every TokenFields",
+          all(s.token_fields.tokenizer_name == tokenizer_name for s in tokenised))
+    check("equals_sign_index == last_token_index for all CAT stimuli",
+          all(
+              s.token_fields.equals_sign_index == s.token_fields.last_token_index
+              for s in tokenised if s.category.startswith("CAT-")
+          ))
+    check("No -1 sentinel in any token_fields",
+          all(s.token_fields.equals_sign_index != -1 for s in tokenised))
 
     try:
-        validate_dataset(tokenized)
-        check("validate_dataset() supera tutti i check interni", True)
-    except AssertionError as e:
-        check("validate_dataset() supera tutti i check interni", False, str(e))
+        validate_dataset(tokenised)
+        check("validate_dataset() passes all internal checks", True)
+    except AssertionError as exc:
+        check("validate_dataset() passes all internal checks", False, str(exc))
 
-    return tokenized
+    return tokenised
 
 
-# ---------------------------------------------------------------------------
-# Sezione 3 — Statistical
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+# 3. STATISTICAL
+# ─────────────────────────────────────────────────────────────────────────────
 
 def test_statistical(dataset: List[Stimulus]) -> None:
-    section("3. STATISTICAL — Distribuzioni e bilanciamento (aritmetica)")
+    section("3. STATISTICAL — Balance and pair coherence")
 
-    pair_counts = Counter(s.contrast.pair_id for s in dataset)
-    check("Ogni pair_id compare 2 volte", all(v == 2 for v in pair_counts.values()))
+    sign_stims = [s for s in dataset if s.category == "CAT-SIGN"]
+    par_stims  = [s for s in dataset if s.category == "CAT-PARITY"]
 
-    check("extraction_strategy_by_property ha le 4 chiavi corrette",
+    # Sign balance
+    sign_dist = Counter(s.labels.sign for s in sign_stims)
+    check("CAT-SIGN: exact 50/50 sign balance",
+          sign_dist[0] == sign_dist[1],
+          f"sign distribution: {dict(sign_dist)}")
+
+    # Parity balance
+    par_dist = Counter(s.labels.parity for s in par_stims)
+    check("CAT-PARITY: exact 50/50 parity balance",
+          par_dist[0] == par_dist[1],
+          f"parity distribution: {dict(par_dist)}")
+
+    # Pair coherence
+    for cat_stims, cat in [(sign_stims, "CAT-SIGN"), (par_stims, "CAT-PARITY")]:
+        pair_counts = Counter(s.contrast.pair_id for s in cat_stims)
+        check(f"{cat}: every pair_id appears exactly twice",
+              all(v == 2 for v in pair_counts.values()),
+              f"odd counts: {[k for k, v in pair_counts.items() if v != 2][:3]}")
+
+    # Template balance (round-robin: difference ≤ 2)
+    for cat_stims, cat in [(sign_stims, "CAT-SIGN"), (par_stims, "CAT-PARITY")]:
+        tpl_counts = Counter(s.template_id for s in cat_stims)
+        vals = sorted(tpl_counts.values())
+        check(f"{cat}: template counts balanced (max spread ≤ 2)",
+              vals[-1] - vals[0] <= 2,
+              f"template distribution: {dict(tpl_counts)}")
+
+    # No cross-category ID collisions
+    all_ids = [s.id for s in dataset]
+    check("No duplicate stimulus IDs across categories",
+          len(all_ids) == len(set(all_ids)))
+
+    # extraction_strategy_by_property keys
+    check("All stimuli: extraction_strategy has 'sign' and 'parity' keys",
           all(
-              set(s.extraction_strategy_by_property.keys()) == {"operator", "sign", "parity", "magnitude"}
+              set(s.extraction_strategy_by_property.keys()) >= {"sign", "parity"}
               for s in dataset
           ))
 
+    # CAT-SIGN: parity of |result| is same within each pair
+    pair_map: dict = {}
+    for s in sign_stims:
+        pair_map.setdefault(s.contrast.pair_id, []).append(s)
+    parity_ok = all(
+        p[0].labels.parity == p[1].labels.parity
+        for p in pair_map.values() if len(p) == 2
+    )
+    check("CAT-SIGN: parity(|result|) identical within each pair", parity_ok)
 
-# ---------------------------------------------------------------------------
-# Sezione 4 — Round-trip
-# ---------------------------------------------------------------------------
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. ROUND-TRIP
+# ─────────────────────────────────────────────────────────────────────────────
 
 def test_roundtrip(dataset: List[Stimulus], tmp_path: Path) -> None:
-    section("4. ROUND-TRIP — Serializzazione JSONL (aritmetica)")
-    out_file = tmp_path / "test_roundtrip.jsonl"
-    BalancedArithmeticGenerator().write_jsonl(out_file, dataset)
+    section("4. ROUND-TRIP — JSONL serialisation")
 
-    required = {
-        "id", "text", "split", "template_id", "labels", "contrast",
-        "token_fields", "extraction_strategy_by_property",
-        "dataset_version", "category", "n_reasoning_steps",
-    }
-    malformed = [
-        (i, set(required) - obj.keys())
-        for i, line in enumerate(out_file.read_text(encoding="utf-8").strip().split("\n"))
+    out_file = tmp_path / "roundtrip.jsonl"
+    write_jsonl(out_file, dataset)
+
+    required_root = REQUIRED_ROOT_KEYS
+    lines = out_file.read_text(encoding="utf-8").strip().split("\n")
+    check(f"JSONL line count matches ({len(dataset)})",
+          len(lines) == len(dataset))
+
+    errors = []
+    for i, line in enumerate(lines):
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError as exc:
+            errors.append(f"line {i}: {exc}")
+            continue
+        missing = required_root - obj.keys()
+        if missing:
+            errors.append(f"line {i} ({obj.get('id','?')}): missing {missing}")
+
+    check("All lines valid JSON with required root keys", not errors,
+          "; ".join(errors[:3]))
+
+    # Type preservation: sign and parity must remain int after JSON round-trip.
+    type_errors = []
+    for line in lines:
+        obj = json.loads(line)
+        for key in ("sign", "parity"):
+            val = obj["labels"][key]
+            if not isinstance(val, int):
+                type_errors.append(f"{obj['id']}.labels.{key} = {val!r} ({type(val).__name__})")
+    check("labels.sign and labels.parity are int after round-trip",
+          not type_errors, "; ".join(type_errors[:3]))
+
+    # Sentinel: no -1 anywhere in token_fields
+    sentinel_errors = [
+        obj["id"]
+        for line in lines
         for obj in [json.loads(line)]
-        if required - obj.keys()
+        if obj["token_fields"].get("equals_sign_index") == -1
     ]
-    check("JSONL valido e schema rispettato", not malformed, f"Errori: {malformed[:3]}")
+    check("No -1 sentinel in token_fields after round-trip",
+          not sentinel_errors, str(sentinel_errors[:3]))
 
 
-# ---------------------------------------------------------------------------
-# Sezione 5 — Control categories
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+# 5. CONTROL
+# ─────────────────────────────────────────────────────────────────────────────
 
-def test_control_categories(tokenizer_name: str, tmp_path: Path) -> None:
-    """
-    5a. Schema radice completo (REQUIRED_ROOT_KEYS)
-    5b. Tipi sentinel corretti (sign/parity == -1 come int)
-    5c. extraction_strategy_by_property: dict con le 4 chiavi
-    5d. Compatibilità cross-categoria: stesse chiavi di CAT-ARITH
-    5e. Round-trip JSON: tipi int preservati dopo dumps/loads
-    5f. Unicità degli ID nel gruppo
-    5g. validate_schema di merge_stimuli supera dopo tokenizzazione
-    5h. Tier coverage: tutti e tre i tier (short/medium/long) rappresentati
-    5i. Zero duplicati testuali nel campione generato
-    """
-    section("5. CONTROL CATEGORIES — Schema, tier coverage, zero duplicati")
+def test_control(tokenizer_name: str, arith_dataset: List[Stimulus]) -> None:
+    section("5. CONTROL — Schema, length distribution, no duplicates")
 
-    neutral_stimuli = generate_neutral_stimuli(n=90)   # 30 per tier
-    numeric_stimuli = generate_numeric_stimuli(n=90)
+    neu_stimuli = generate_neutral_stimuli(n=90, seed=84)
+    num_stimuli = generate_numeric_stimuli(n=90, seed=42)
 
-    # Chiavi CAT-ARITH calcolate una volta sola (usata in 5d)
-    arith_keys = set(
-        BalancedArithmeticGenerator(min_n=1, max_n=10, seed=0)
-        .build_balanced_dataset(pairs_per_contrast=1)[0]
-        .to_dict().keys()
-    )
+    for label, ctrl in [("CTRL-NEU", neu_stimuli), ("CTRL-NUM", num_stimuli)]:
 
-    for label, stimuli in [("CTRL-NEU", neutral_stimuli), ("CTRL-NUM", numeric_stimuli)]:
-
-        # 5a — Schema radice completo
-        missing_keys_list = [
+        # 5a. Schema: required root keys present
+        missing = [
             (s.id, REQUIRED_ROOT_KEYS - s.to_dict().keys())
-            for s in stimuli
-            if REQUIRED_ROOT_KEYS - s.to_dict().keys()
+            for s in ctrl if REQUIRED_ROOT_KEYS - s.to_dict().keys()
         ]
-        check(f"{label} 5a: schema radice completo",
-              not missing_keys_list,
-              f"Stimoli con chiavi mancanti: {missing_keys_list[:2]}")
+        check(f"{label} 5a: all required root keys present",
+              not missing, str(missing[:2]))
 
-        # 5b — Tipi e valori sentinel
-        wrong_types = [s.id for s in stimuli
-                       if not isinstance(s.labels.sign, int) or not isinstance(s.labels.parity, int)]
-        check(f"{label} 5b: sign e parity sono int",
-              not wrong_types, f"ID con tipo errato: {wrong_types[:3]}")
+        # 5b. Sentinel: equals_sign_index is None (not -1) for CTRL
+        bad_sentinel = [s.id for s in ctrl
+                        if s.token_fields.equals_sign_index == -1]
+        check(f"{label} 5b: equals_sign_index is None (not -1)",
+              not bad_sentinel, str(bad_sentinel[:3]))
 
-        wrong_val = [s.id for s in stimuli if s.labels.sign != -1 or s.labels.parity != -1]
-        check(f"{label} 5b: sign == -1 e parity == -1",
-              not wrong_val, f"ID con valore errato: {wrong_val[:3]}")
+        # 5c. extraction_strategy keys
+        check(f"{label} 5c: extraction_strategy has sign + parity",
+              all(
+                  {"sign", "parity"} <= set(s.extraction_strategy_by_property.keys())
+                  for s in ctrl
+              ))
 
-        # 5c — extraction_strategy_by_property
-        expected_keys = {"operator", "sign", "parity", "magnitude"}
-        wrong_strat = [
-            (s.id, set(s.extraction_strategy_by_property.keys()))
-            for s in stimuli
-            if not isinstance(s.extraction_strategy_by_property, dict)
-            or s.extraction_strategy_by_property.keys() != expected_keys
-        ]
-        check(f"{label} 5c: extraction_strategy_by_property corretto",
-              not wrong_strat, f"Errori: {wrong_strat[:2]}")
+        # 5d. Same root schema as arithmetic stimuli
+        arith_keys = set(arith_dataset[0].to_dict().keys())
+        ctrl_keys  = set(ctrl[0].to_dict().keys())
+        sym_diff   = arith_keys.symmetric_difference(ctrl_keys)
+        check(f"{label} 5d: identical root keys to arithmetic stimuli",
+              not sym_diff, f"symmetric difference: {sym_diff}")
 
-        # 5d — Compatibilità cross-categoria con CAT-ARITH
-        ctrl_keys      = set(stimuli[0].to_dict().keys())
-        symmetric_diff = arith_keys.symmetric_difference(ctrl_keys)
-        check(f"{label} 5d: chiavi identiche a CAT-ARITH",
-              not symmetric_diff, f"Chiavi asimmetriche: {symmetric_diff}")
-
-        # 5e — Round-trip JSON
+        # 5e. JSON round-trip preserves int types
         type_errors = [
-            (s.id, field, type(json.loads(s.to_json())["labels"][field]).__name__)
-            for s in stimuli
-            for field in ("sign", "parity")
-            if not isinstance(json.loads(s.to_json())["labels"][field], int)
+            f"{s.id}.labels.{k}"
+            for s in ctrl
+            for k in ("sign", "parity")
+            if not isinstance(json.loads(s.to_json())["labels"][k], int)
         ]
-        check(f"{label} 5e: tipi int preservati dopo round-trip JSON",
-              not type_errors, f"Errori: {type_errors[:3]}")
+        check(f"{label} 5e: sign/parity are int after JSON round-trip",
+              not type_errors, str(type_errors[:3]))
 
-        # 5f — Unicità ID
-        ids = [s.id for s in stimuli]
-        check(f"{label} 5f: ID unici",
-              len(ids) == len(set(ids)),
-              f"Duplicati: {[x for x in ids if ids.count(x) > 1][:3]}")
-
-        # 5h — Tier coverage: tutti e tre i tier strutturali devono comparire.
-        # La struttura del testo è il proxy pre-tokenizzazione per la lunghezza.
-        # Usiamo la lunghezza in caratteri come discriminante (short < 30, long > 50).
-        char_lens   = [len(s.text) for s in stimuli]
-        has_short   = any(l < 35  for l in char_lens)
-        has_long    = any(l > 55  for l in char_lens)
-        has_medium  = any(35 <= l <= 55 for l in char_lens)
-        check(f"{label} 5h: tutti e tre i tier di lunghezza rappresentati",
-              has_short and has_medium and has_long,
-              f"char_len range: [{min(char_lens)}, {max(char_lens)}] "
-              f"short={has_short} medium={has_medium} long={has_long}")
-
-        # 5i — Zero duplicati testuali
-        texts = [s.text for s in stimuli]
+        # 5f. No duplicate texts
+        texts = [s.text for s in ctrl]
         n_dup = len(texts) - len(set(texts))
-        check(f"{label} 5i: zero duplicati testuali ({len(texts)} stimoli)",
-              n_dup == 0, f"Duplicati trovati: {n_dup}")
+        check(f"{label} 5f: zero duplicate texts ({len(texts)} stimuli)",
+              n_dup == 0, f"{n_dup} duplicates found")
 
-    # 5g — validate_schema post-tokenizzazione (richiede tokenizer, eseguito una sola volta)
-    print(f"\n  Tokenizzazione stimoli di controllo ({tokenizer_name}) per 5g ...")
-    try:
-        tok_neu = populate_token_fields(neutral_stimuli, tokenizer_name)
-        tok_num = populate_token_fields(numeric_stimuli, tokenizer_name)
-        check("5g: tokenizzazione stimoli di controllo riuscita", True)
-    except Exception as e:
-        check("5g: tokenizzazione stimoli di controllo riuscita", False, str(e))
-        return
-
-    for label, stimuli in [("CTRL-NEU", tok_neu), ("CTRL-NUM", tok_num)]:
+        # 5g. validate_schema from merge_stimuli passes (pre-tokenisation)
         schema_errors = [
             (s.id, msg)
-            for s in stimuli
-            for ok, msg in [validate_schema(s.to_dict())]
+            for s in ctrl
+            for ok, msg in [validate_schema(s.to_dict(), require_tokenized=False)]
             if not ok
         ]
-        check(f"{label} 5g: validate_schema supera post-tokenizzazione",
-              not schema_errors, f"Errori: {schema_errors[:2]}")
+        check(f"{label} 5g: validate_schema passes (untokenised)",
+              not schema_errors, str(schema_errors[:2]))
 
-        # Bonus: distribuzione token_length_strata dopo tokenizzazione reale
-        strata = Counter(s.token_fields.token_length_strata for s in stimuli)
-        missing_tiers = [t for t in TIERS if strata.get(t, 0) == 0]
-        check(f"{label} 5g+: tutti i tier presenti in token_length_strata reale",
+    # 5h. Tokenisation + length-matching
+    print(f"\n  Tokenising control stimuli with {tokenizer_name} …")
+    try:
+        tok_neu = populate_token_fields(neu_stimuli, tokenizer_name)
+        tok_num = populate_token_fields(num_stimuli, tokenizer_name)
+        check("5h: tokenisation of control stimuli succeeded", True)
+    except Exception as exc:
+        check("5h: tokenisation of control stimuli succeeded", False, str(exc))
+        return
+
+    # Length-matching test: after matching, strata distribution should agree.
+    tok_arith = [s for s in arith_dataset
+                 if s.token_fields.token_length_strata is not None]
+    if tok_arith:
+        try:
+            matched_neu = length_match_to_arithmetic(tok_neu, tok_arith, seed=0)
+            arith_strata = Counter(
+                s.token_fields.token_length_strata for s in tok_arith
+            )
+            match_strata = Counter(
+                s.token_fields.token_length_strata for s in matched_neu
+            )
+            # After matching, strata keys should agree.
+            same_keys = set(arith_strata.keys()) == set(match_strata.keys())
+            check("5h: length-matched CTRL-NEU has same strata keys as arithmetic",
+                  same_keys,
+                  f"arith={set(arith_strata)}, matched={set(match_strata)}")
+        except RuntimeError as exc:
+            check("5h: length_match_to_arithmetic", False, str(exc))
+    else:
+        print("  (skipping length-match test: arithmetic stimuli not tokenised)")
+
+    # 5i. validate_schema passes post-tokenisation
+    for label, tok_ctrl in [("CTRL-NEU", tok_neu), ("CTRL-NUM", tok_num)]:
+        schema_errors = [
+            (s.id, msg)
+            for s in tok_ctrl
+            for ok, msg in [validate_schema(s.to_dict(), require_tokenized=True)]
+            if not ok
+        ]
+        check(f"{label} 5i: validate_schema passes post-tokenisation",
+              not schema_errors, str(schema_errors[:2]))
+
+        # Token-length strata all present (short/medium/long)
+        strata = Counter(s.token_fields.token_length_strata for s in tok_ctrl)
+        missing_tiers = [t for t in ("short", "medium", "long")
+                         if strata.get(t, 0) == 0]
+        check(f"{label} 5i+: all three length strata present",
               not missing_tiers,
-              f"Tier assenti: {missing_tiers} — distribuzione: {dict(strata)}")
+              f"missing: {missing_tiers}, distribution: {dict(strata)}")
 
 
-# ---------------------------------------------------------------------------
-# Entrypoint
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+# Entry point
+# ─────────────────────────────────────────────────────────────────────────────
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--pairs",     type=int, default=50)
-    parser.add_argument("--tokenizer", type=str, default="gpt2")
-    parser.add_argument("--tmp_dir",   type=str, default="/tmp/test_dataset")
+    parser = argparse.ArgumentParser(
+        description="Test suite for the v5 dataset."
+    )
+    parser.add_argument("--n_pairs",   type=int, default=50,
+                        help="Pairs per category to generate in tests (default 50).")
+    parser.add_argument("--tokenizer", type=str, default="EleutherAI/pythia-1.4b",
+                        help="HuggingFace tokenizer to use (default: Pythia-1.4B).")
+    parser.add_argument("--tmp_dir",   type=str, default="/tmp/test_dataset_v5")
     args = parser.parse_args()
 
     tmp_path = Path(args.tmp_dir)
     tmp_path.mkdir(parents=True, exist_ok=True)
 
     test_unit()
-    dataset = test_integration(args.pairs, args.tokenizer)
+    dataset = test_integration(args.n_pairs, args.tokenizer)
     test_statistical(dataset)
     test_roundtrip(dataset, tmp_path)
-    test_control_categories(args.tokenizer, tmp_path)
+    test_control(args.tokenizer, dataset)
 
     total = results["passed"] + results["failed"]
-    print(f"\n  Risultati: {results['passed']}/{total} test superati")
+    colour = "\033[92m" if results["failed"] == 0 else "\033[91m"
+    print(f"\n{colour}  Results: {results['passed']}/{total} tests passed\033[0m")
     sys.exit(0 if results["failed"] == 0 else 1)
 
 

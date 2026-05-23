@@ -577,22 +577,28 @@ if __name__ == "__main__":
     """
     Esempio d'uso della pipeline CKA completa.
 
-    Struttura attesa dei file su disco (generata dalla Fase 1 della pipeline):
-        data/processed/gpt2-medium/
-            layer_00.pt     → Tensor (N, 768), N stimoli, d=768
+    Struttura attesa dei file su disco (generata dalla Fase 2 della pipeline):
+        data/processed/pythia-1.4b/
+            layer_00.pt     → Tensor (N, 2048), N stimoli, d=2048
             layer_01.pt
             ...
             layer_23.pt
-            metadata.json   → {"stimuli_ids": [...], "category": [...]}
+            metadata.json   → {"stimuli_ids": [...], "categories": [...], ...}
+
+    Categorie dataset v5:
+        CAT-SIGN   — stimoli aritmetici (contrasto sul segno)
+        CAT-PARITY — stimoli aritmetici (contrasto sulla parità)
+        CTRL-NEU   — prosa inglese senza numeri
+        CTRL-NUM   — numeri in contesto non aritmetico
     """
     import json
 
     # ── Configurazione ───────────────────────────────────────────────────────
-    MODEL_NAME  = "gpt2-medium"       # o "phi2", "phi3-mini" per esperimenti main
-    N_LAYERS    = 24                  # GPT-2 medium ha 24 layer transformer
-    N_SUB       = 512                 # subsample per CKA (512 è stabile e veloce)
+    MODEL_NAME  = "pythia-1.4b"    # modello target della tesi
+    N_LAYERS    = 24               # Pythia-1.4B ha 24 layer transformer
+    N_SUB       = 512              # subsample per CKA (512 stabile e veloce)
     SEED        = 42
-    DEVICE      = "cpu"               # usa "cuda" se disponibile
+    DEVICE      = "cpu"            # usa "cuda" se disponibile
 
     BASE_DIR    = Path("data/processed") / MODEL_NAME
     RESULTS_DIR = Path("results")
@@ -616,7 +622,6 @@ if __name__ == "__main__":
         filename_stem="cka_matrix_intramodel",
     )
 
-    # La diagonale deve essere 1.0 — sanity check
     diag_mean = np.diag(cka_matrix).mean()
     assert abs(diag_mean - 1.0) < 1e-6, f"Sanity check fallito: diag mean = {diag_mean}"
     print(f"Sanity check OK: diagonale media = {diag_mean:.6f}")
@@ -626,23 +631,23 @@ if __name__ == "__main__":
     print("USO 2 — CKA inter-categoria (curva per layer, RQ1)")
     print("=" * 60)
 
-    # Carichiamo metadata per ottenere gli indici per categoria
+    # metadata["categories"] è una lista parallela a stimuli_ids
+    # con valori "CAT-SIGN" | "CAT-PARITY" | "CTRL-NEU" | "CTRL-NUM"
     with open(BASE_DIR / "metadata.json", "r") as f:
         metadata = json.load(f)
 
-    # metadata["category"] è una lista parallela a stimuli_ids
-    # con valori "arithmetic" | "algebra" | "gsm8k" | "generic"
-    categories = np.array(metadata["category"])
+    categories = np.array(metadata["categories"])   # plurale — v5
 
-    # Indici per ogni macro-categoria (cfr. Dataset.md)
-    math_mask    = np.isin(categories, ["arithmetic", "algebra", "gsm8k"])
-    generic_mask = categories == "generic"
+    # Matematica: stimoli con contrasto aritmetico (sign o parity)
+    # Controllo: prosa e numeri in contesto non aritmetico
+    math_mask    = np.isin(categories, ["CAT-SIGN", "CAT-PARITY"])
+    generic_mask = np.isin(categories, ["CTRL-NEU", "CTRL-NUM"])
 
     math_indices    = np.where(math_mask)[0]
     generic_indices = np.where(generic_mask)[0]
 
-    print(f"  Stimoli matematici: {len(math_indices)}")
-    print(f"  Stimoli generici:   {len(generic_indices)}")
+    print(f"  Stimoli matematici (CAT-SIGN + CAT-PARITY): {len(math_indices)}")
+    print(f"  Stimoli controllo  (CTRL-NEU + CTRL-NUM):   {len(generic_indices)}")
 
     cka_inter = compute_cka_intercategory_all_layers(
         hidden_states_dir=BASE_DIR,
@@ -652,7 +657,6 @@ if __name__ == "__main__":
         device=DEVICE,
     )
 
-    # Salvataggio come array 1D
     np.save(RESULTS_DIR / "cka_intercategory.npy", cka_inter)
     print("\nCKA inter-categoria per layer:")
     for l, val in enumerate(cka_inter):
@@ -660,11 +664,12 @@ if __name__ == "__main__":
 
     # ── Uso 3: CKA cross-temporale (curva RQ3) ───────────────────────────────
     print("\n" + "=" * 60)
-    print("USO 3 — CKA cross-temporale (base vs checkpoint QLoRA, RQ3)")
+    print("USO 3 — CKA cross-temporale (base vs checkpoint MetaMath/QLoRA, RQ3)")
     print("=" * 60)
 
-    # Checkpoint generati durante il fine-tuning QLoRA (cfr. Pipeline.md Fase 9)
+    # Checkpoint generati durante il fine-tuning QLoRA su MetaMath.
     # Ogni directory contiene i file layer_XX.pt estratti su quel checkpoint
+    # usando lo stesso geometric_eval set (dataset_master_v5.jsonl).
     CKPT_BASE = Path("data/processed/checkpoints")
     checkpoint_dirs = {
         "ckpt_500":  CKPT_BASE / "ckpt_500",
@@ -673,7 +678,6 @@ if __name__ == "__main__":
         "ckpt_2000": CKPT_BASE / "ckpt_2000",
     }
 
-    # Filtra solo i checkpoint che esistono su disco
     checkpoint_dirs = {k: v for k, v in checkpoint_dirs.items() if v.exists()}
 
     if checkpoint_dirs:
@@ -688,7 +692,6 @@ if __name__ == "__main__":
 
         cka_drift = compute_cka_drift(cka_temporal)
 
-        # Salvataggio: una riga per checkpoint, una colonna per layer
         drift_matrix = np.stack(list(cka_drift.values()))  # (n_ckpt, n_layers)
         np.save(RESULTS_DIR / "cka_drift_temporal.npy", drift_matrix)
 
@@ -699,4 +702,4 @@ if __name__ == "__main__":
                   f"(drift = {drift[l_max]:.4f})")
     else:
         print("  Nessun checkpoint trovato su disco — skip Uso 3.")
-        print("  Avvia prima il fine-tuning QLoRA (Pipeline.md, Fase 9).")
+        print("  Avvia prima il fine-tuning QLoRA con MetaMath (Pipeline.md, Fase 9).")
