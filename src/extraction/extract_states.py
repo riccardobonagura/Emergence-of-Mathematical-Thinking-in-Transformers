@@ -1,17 +1,15 @@
 """
-Fase 2 - Estrazione Hidden States (Batch, Mask-based Indexing, Layer-wise)
-Isola resid_post garantendo il tracciamento topologico e l'efficienza VRAM.
+Phase 2 - Hidden States Extraction (Batch, Mask-based Indexing, Layer-wise)
+Isolates resid_post ensuring topological tracking and VRAM efficiency.
 
-Compatibilità dataset v5
+v5 Dataset Compatibility
 ------------------------
-In v5 tutte le proprietà sondabili (sign, parity) usano la strategia
-"last_token": la rappresentazione viene estratta dall'ultimo token reale
-della sequenza, che coincide sempre con il token "=" per gli stimoli CAT-*.
+In v5, all probeable properties (sign, parity) use the "last_token" strategy:
+the representation is extracted from the last real token of the sequence,
+which always coincides with the "=" token for CAT-* stimuli.
 
-Con left-padding, l'ultimo token reale è sempre all'indice `max_len - 1`
-indipendentemente dalla lunghezza della sequenza — il branch "equals_sign"
-del codice v4 è stato rimosso perché ridondante e potenzialmente errato
-(equals_sign_index è ora annidato in token_fields, non top-level).
+With left-padding, the final real token is always at index `max_len - 1`
+regardless of the sequence length.
 """
 
 from __future__ import annotations
@@ -26,7 +24,7 @@ if TYPE_CHECKING:
     from transformer_lens import HookedTransformer
 
 def load_stimuli(path: str | Path) -> list[dict]:
-    """Carica gli stimoli generati nella Fase 1."""
+    """Load the stimuli generated in Phase 1."""
     with open(path, "r", encoding="utf-8") as f:
         return [json.loads(line) for line in f]
 
@@ -36,17 +34,13 @@ def save_extraction_metadata(
     model: "HookedTransformer",
 ) -> None:
     """
-    Costruisce e salva la mappatura tra l'indice di riga dei tensori estratti
-    e gli ID degli stimoli, vitale per la decodifica (Fase 3).
-
-    Chiave 'categories' (plurale) — coerente con il lettore in cka.py.
-    In v5, probe_strategy è uniformemente 'last_token' per tutti gli stimoli:
-    non è più un campo per-stimolo ma un attributo fisso del dataset.
+    Build and save the mapping between the row index of extracted tensors
+    and stimulus IDs, vital for decoding (Phase 3).
     """
     metadata = {
         "stimuli_ids": [s["id"] for s in stimuli],
-        "categories":  [s["category"] for s in stimuli],   # plurale — v5
-        "probe_strategy": "last_token",                     # uniforme in v5
+        "categories":  [s["category"] for s in stimuli],   # plural — v5
+        "probe_strategy": "last_token",                     # uniform in v5
         "dataset_version": stimuli[0].get("dataset_version", "unknown") if stimuli else "unknown",
         "n_layers":  model.cfg.n_layers,
         "d_model":   model.cfg.d_model,
@@ -66,18 +60,8 @@ def extract_layer_batched(
     batch_size: int = 16
 ) -> torch.Tensor:
     """
-    Estrae l'hidden state per un layer specifico procedendo a batch,
-    utilizzando l'attention_mask per calcolare l'offset causato dal left-padding.
-
-    Strategia di estrazione (v5)
-    ----------------------------
-    Tutti gli stimoli v5 usano la strategia 'last_token'.
-    Con left-padding, il token reale finale è sempre all'indice `max_len - 1`:
-    il padding si accumula a sinistra, il contenuto termina sempre a destra.
-
-    Il ramo 'equals_sign' del codice v4 è stato rimosso perché:
-      - equals_sign_index == last_token_index per costruzione in v5
-      - equals_sign_index è annidato in token_fields (non top-level)
+    Extracts the hidden state for a specific layer in batches,
+    using the attention_mask to compute the offset caused by left-padding.
     """
     layer_activations = []
     hook_name = f"blocks.{layer_idx}.hook_resid_post"
@@ -93,12 +77,10 @@ def extract_layer_batched(
             return_attention_mask=True
         ).to(model.cfg.device)
         
-        input_ids     = tokens_out["input_ids"]        # [batch, seq_len]
-        attention_mask = tokens_out["attention_mask"]
+        input_ids      = tokens_out["input_ids"]        # [batch, seq_len]
         max_len        = input_ids.shape[1]
 
-        # Con left-padding, l'ultimo token reale è sempre all'indice max_len - 1.
-        # Non serve calcolare l'offset per-stimolo: la posizione è fissa.
+        # With left-padding, the last real token is always at index max_len - 1.
         target_idx = max_len - 1
         storage = []
         
@@ -116,39 +98,71 @@ def extract_layer_batched(
     torch.cuda.empty_cache()
     return torch.cat(layer_activations, dim=0)   # [N, d_model]
 
-def main():
-    from transformer_lens import HookedTransformer
 
-    # Dataset master v5 (merge di CAT-SIGN, CAT-PARITY, CTRL-NEU, CTRL-NUM)
-    DATA_PATH = Path("data/processed/dataset_master_v5.jsonl")
-    OUT_DIR   = Path("data/processed/pythia-1.4b")
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+def extract_from_model(
+    model: "HookedTransformer",
+    stimuli: list[dict],
+    out_dir: Path,
+    batch_size: int = 32
+) -> None:
+    """
+    Functional entry-point for extraction.
+    Decouples model initialization from the extraction loop logic.
+    Designed to be invoked both at baseline and on merged checkpoints (RQ3).
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
     
-    print("Inizializzazione HookedTransformer in FP16...")
-    model = HookedTransformer.from_pretrained(
-        "EleutherAI/pythia-1.4b",
-        device="cuda", 
-        dtype=torch.float16,
-        fold_ln=True,    # fold LayerNorm per analisi mechanistic; resid_post invariato
-    )
-    
-    # Left-padding: garantisce che l'indice max_len-1 punti sempre all'ultimo token reale
+    # Tokenizer setup required for proper token alignment
     model.tokenizer.padding_side = "left" 
     if model.tokenizer.pad_token is None:
         model.tokenizer.pad_token = model.tokenizer.eos_token
         
-    stimuli  = load_stimuli(DATA_PATH)
-    n_layers = model.cfg.n_layers   # 24 per Pythia-1.4B
+    # --- THE FAIL-FAST GUARDIAN ---
+    sample_text = stimuli[0]["text"]
+    sample_tokens = model.tokenizer(sample_text)["input_ids"]
+    last_token_str = model.tokenizer.decode([sample_tokens[-1]])
     
-    save_extraction_metadata(stimuli, OUT_DIR, model)
-    print(f"Metadata salvati. "
-          f"Avvio estrazione per {len(stimuli)} stimoli su {n_layers} layer.")
+    if "=" not in last_token_str:
+        raise AssertionError(
+            f"FATAL: Tokenizer alignment broken for {model.cfg.model_name}.\n"
+            f"Expected extraction token '=', but got {last_token_str!r}.\n"
+            f"This architecture tokenizes numbers/spaces differently. "
+            "Write custom extraction index logic before proceeding."
+        )
+    # ------------------------------
+
+    n_layers = model.cfg.n_layers
+    
+    save_extraction_metadata(stimuli, out_dir, model)
+    print(f"Metadata saved. Starting extraction for {len(stimuli)} stimuli across {n_layers} layers.")
     
     for l in range(n_layers):
-        layer_tensor = extract_layer_batched(model, stimuli, layer_idx=l, batch_size=32)
-        out_file = OUT_DIR / f"layer_{l:02d}.pt"
+        layer_tensor = extract_layer_batched(model, stimuli, layer_idx=l, batch_size=batch_size)
+        out_file = out_dir / f"layer_{l:02d}.pt"
         torch.save(layer_tensor.half(), out_file)
         print(f"  layer_{l:02d}.pt  shape={layer_tensor.shape}")
+
+def main():
+    """
+    Executable script for baseline pre-fine-tuning extraction.
+    """
+    from transformer_lens import HookedTransformer
+
+    DATA_PATH = Path("data/processed/dataset_master_v5.jsonl")
+    OUT_DIR   = Path("data/processed/pythia-1.4b")
+    
+    print("Initializing HookedTransformer in FP16 (Baseline)...")
+    model = HookedTransformer.from_pretrained(
+        "EleutherAI/pythia-1.4b",
+        device="cuda", 
+        dtype=torch.float16,
+        fold_ln=True,    # fold LayerNorm for mechanistic analysis
+    )
+    
+    stimuli = load_stimuli(DATA_PATH)
+    extract_from_model(model, stimuli, OUT_DIR, batch_size=32)
+
 
 if __name__ == "__main__":
     import numpy as np
