@@ -6,6 +6,8 @@ from typing import Optional, Sequence
 
 import numpy as np
 
+from plotly.graph_objects import Figure
+
 try:
     import torch
 except ImportError:

@@ -194,9 +194,9 @@ def main() -> None:
 
     master_dataset       = []
     seen_ids             = set()
-    category_counts      = Counter()
-    split_counts         = Counter()
-    strata_counts        = Counter()
+    category_counts      = Counter() # type: ignore
+    split_counts         = Counter() # type: ignore
+    strata_counts        = Counter() # type: ignore
     untokenized_warnings = 0
 
     print(f"\nMerging {len(args.inputs)} file(s) …")

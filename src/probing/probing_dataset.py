@@ -147,7 +147,7 @@ class ProbingDataset:
         rng = np.random.default_rng(
             get_seed(global_seed, "undersampling", hash(prop_name) % 10_000)
         )
-        bal_idx, bal_lbl = [], []
+        bal_idx, bal_lbl = [], [] # type: ignore
         for cls in np.unique(labels):
             pool = indices[labels == cls]
             chosen = rng.choice(pool, size=min_count, replace=False)

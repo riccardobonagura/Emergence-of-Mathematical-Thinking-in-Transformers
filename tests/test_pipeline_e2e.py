@@ -132,10 +132,10 @@ def test_full_pipeline_execution(e2e_env):
     n_stimuli = e2e_env
     
     # Pre-allocate random FP32 tensor (Scikit-Learn prefers FP32 over FP16 on CPU)
-    mock_tensor = torch.randn(n_stimuli, 2048, dtype=torch.float32)
+    mock_tensor = torch.randn(n_stimuli, 2048, dtype=torch.float32).numpy()
     
     # --- EXECUTE RQ1 (Isotropy and CKA) ---
-    with patch("run_rq1.load_hidden_states", return_value=mock_tensor) as mock_load_rq1:
+    with patch("src.probing.io_utils.load_hidden_states", return_value=mock_tensor) as mock_load_rq1:
         with patch.object(sys, "argv", ["run_rq1.py", "--config", "configs/config.yaml"]):
             run_rq1.main()
             

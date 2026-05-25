@@ -14,10 +14,12 @@ properties:
   parity:
     type: "binary"
     label_field: "parity"
+    category: "CAT-PARITY"
     class_names: ["even", "odd"]
   sign:
     type: "binary"
     label_field: "sign"
+    category: "CAT-SIGN"
     class_names: ["positive", "negative"]
   # Aggiungi altre proprietà se presenti in stimuli.jsonl
 

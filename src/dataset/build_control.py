@@ -173,13 +173,17 @@ class NeutralGenerator(ControlGenerator):
     ID_PREFIX = "CTRL-NEU"
 
     # Short subjects (1 token each on GPT-NeoX)
-    _S = ["Rain", "Wind", "Fog", "Snow", "Frost", "Dust", "Smoke", "Steam"]
+    _S = [
+    "Rain", "Wind", "Fog", "Snow", "Frost", "Dust", "Smoke", "Steam",  
+    "Hail", "Mist", "Ice", "Ash", "Dew", "Cloud",                     
+]
 
     # Verbs: space-prefixed so they join cleanly (1–2 tokens each)
     _V = [
-        "falls", "blows", "clears", "drifts",
-        "rises", "settles", "spreads", "fades",
-    ]
+    "falls", "blows", "clears", "drifts",
+    "rises", "settles", "spreads", "fades",                           
+    "lifts", "swirls", "gathers", "melts", "flows",                   
+]
 
     # Objects: short 1–2 word noun phrases
     _O = [
@@ -240,6 +244,7 @@ class NumericGenerator(ControlGenerator):
             "Floor {a} is restricted.",
             "Gate {a} has boarded.",
             "Ward {a} is full.",
+            "Room {a} is vacant.",
         ]
         short = [t.format(a=a)
                  for t in short_templates

@@ -27,8 +27,8 @@ def load_config(config_path: Path) -> dict:
 
 def tokenize_metamath(example: dict, tokenizer: AutoTokenizer, max_len: int) -> dict:
     """Format MetaMathQA as a standard prompt-completion text and tokenize."""
-    text = f"Question: {example['query']}\nAnswer: {example['response']}{tokenizer.eos_token}"
-    return tokenizer(text, truncation=True, max_length=max_len)
+    text = f"Question: {example['query']}\nAnswer: {example['response']}{tokenizer.eos_token}" # type: ignore
+    return tokenizer(text, truncation=True, max_length=max_len) # type: ignore
 
 def main():
     logger = setup_logger()

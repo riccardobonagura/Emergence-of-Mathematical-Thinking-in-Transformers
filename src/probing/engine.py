@@ -45,7 +45,7 @@ class ProbingEngine:
             y_pred    = y_pred,
             n_samples = self.cfg["bootstrap_n_samples"],
             ci        = self.cfg.get("bootstrap_ci", 0.95),
-            base_seed = get_seed(self.cfg["seed"], "bootstrap", layer_idx),
+            seed = get_seed(self.cfg["seed"], "bootstrap", layer_idx),
         )
 
         return {

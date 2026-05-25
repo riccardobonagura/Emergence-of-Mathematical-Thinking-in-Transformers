@@ -1,57 +1,58 @@
-# pipeline.py — scikit-learn pipeline construction and weight denormalisation.
-# StandardScaler is mandatory: probing accuracy is sensitive to feature scale.
+"""
+stats.py — Statistical Evaluation Module.
+Contains robust statistical tests for probing classifiers, enforcing strict
+random seed discipline and correct mathematical invariants.
+"""
 
 import numpy as np
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
-from sklearn.linear_model import LogisticRegression
 from typing import Tuple
+from sklearn.metrics import accuracy_score
+from sklearn.model_selection import permutation_test_score
 
-
-def build_pipeline(
-    max_iter: int,
-    C: float,
-    solver: str,
-    multiclass_strategy: str,   # kept for API compatibility; ignored for binary tasks
-) -> Pipeline:
-    """Return an unfitted (StandardScaler → LogisticRegression) pipeline.
-
-    v5 note: sign and parity are binary tasks; multi_class is not forwarded
-    to LogisticRegression to avoid the sklearn >= 1.5 deprecation warning.
-    multiclass_strategy is accepted but unused — downstream callers need not change.
+def bootstrap_ci(y_true: np.ndarray, y_pred: np.ndarray, n_samples: int = 1000, ci: float = 0.95,
+ seed: int = 42) -> tuple[float, float]:
     """
-    return Pipeline([
-        ("scaler", StandardScaler()),
-        ("clf", LogisticRegression(
-            max_iter=max_iter,
-            C=C,
-            solver=solver,
-            # multi_class omitted: deprecated in sklearn >= 1.5, irrelevant for binary
-        )),
-    ])
-
-
-def denormalize_classifier(pipe: Pipeline) -> Tuple[np.ndarray, np.ndarray]:
-    """Extract weights and bias in the original (unscaled) hidden-state space.
-
-    Algebra:
-        w_orig = w_norm / σ
-        b_orig = b_norm − w_orig · μ
+    Calculates the bootstrap confidence interval for accuracy.
+    Strictly respects the invariant: a single shared index array is sampled per iteration 
+    to maintain alignment between y_true and y_pred.
     """
-    scaler = pipe.named_steps["scaler"]
-    clf    = pipe.named_steps["clf"]
+    rng = np.random.default_rng(seed)
+    n = len(y_true)
+    scores = []
+    
+    for _ in range(n_samples):
+        # CRITICAL INVARIANT: Single shared index sampled once per iteration
+        # Do not call rng.integers twice, otherwise y_true and y_pred will decouple.
+        idx = rng.integers(0, n, size=n)
+        
+        y_true_boot = y_true[idx]
+        y_pred_boot = y_pred[idx]
+        
+        score = accuracy_score(y_true_boot, y_pred_boot)
+        scores.append(score)
+        
+    alpha = (1.0 - ci) / 2.0
+    lower = float(np.percentile(scores, alpha * 100))
+    upper = float(np.percentile(scores, (1.0 - alpha) * 100))
+    
+    return lower, upper
 
-    w_norm = clf.coef_       # (1, d) binary  |  (n_classes, d) multiclass
-    b_norm = clf.intercept_
 
-    # Track binary case before any reshape to restore shape at the end.
-    is_binary = w_norm.shape[0] == 1
-
-    w_orig = w_norm / scaler.scale_                 # broadcast over rows
-    b_orig = b_norm - np.dot(w_orig, scaler.mean_)  # (n_classes,)
-
-    if is_binary:
-        w_orig = w_orig.ravel()          # (d,)
-        b_orig = float(b_orig[0])        # scalar
-
-    return w_orig.astype(np.float64), np.asarray(b_orig, dtype=np.float64)
+def permutation_test(estimator, X: np.ndarray, y: np.ndarray, cv, n_permutations: int = 100, seed: int = 42) -> float:
+    """
+    Calculates the p-value of the estimator's accuracy using a permutation test.
+    Specifically designed for binary/multiclass classification tasks (not regression).
+    """
+    # Enforce strict random state routing to guarantee reproducibility
+    _, _, pvalue = permutation_test_score(
+        estimator, 
+        X, 
+        y, 
+        scoring="accuracy", 
+        cv=cv, 
+        n_permutations=n_permutations, 
+        n_jobs=-1,
+        random_state=seed
+    )
+    
+    return float(pvalue)

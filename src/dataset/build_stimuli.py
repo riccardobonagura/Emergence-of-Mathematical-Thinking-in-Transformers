@@ -284,20 +284,20 @@ class SignContrastGenerator:
             probe_layer_strategy = "all_layers",
         )
 
-        stim_a = Stimulus(
+        stim_a = Stimulus(  
             id      = f"{pair_id}-A",
             text    = tpl_str.format(a=a, b=b),
             labels  = Labels(result=result_a, sign=_sign_label(result_a),
                              parity=_parity_label(result_a)),
-            **common,
-        )
+            **common, # type: ignore[arg-type]
+        ) 
         stim_b = Stimulus(
             id      = f"{pair_id}-B",
             text    = tpl_str.format(a=b, b=a),   # operands swapped
             labels  = Labels(result=result_b, sign=_sign_label(result_b),
                              parity=_parity_label(result_b)),
-            **common,
-        )
+            **common, # type: ignore[arg-type]
+        ) 
         return stim_a, stim_b
 
 
@@ -433,18 +433,18 @@ class ParityContrastGenerator:
             probe_layer_strategy = "all_layers",
         )
 
-        stim_a = Stimulus(
+        stim_a = Stimulus( 
             id      = f"{pair_id}-A",
             text    = tpl_str.format(a=a, b=b_A),
             labels  = Labels(result=r_A, sign=_sign_label(r_A), parity=0),
-            **common,
-        )
-        stim_b = Stimulus(
+            **common, # type: ignore[arg-type]
+        ) 
+        stim_b = Stimulus( 
             id      = f"{pair_id}-B",
             text    = tpl_str.format(a=a, b=b_B),
             labels  = Labels(result=r_B, sign=_sign_label(r_B), parity=1),
-            **common,
-        )
+            **common, # type: ignore[arg-type]
+        ) 
         return stim_a, stim_b
 
 
