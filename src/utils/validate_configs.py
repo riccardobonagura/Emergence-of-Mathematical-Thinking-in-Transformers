@@ -4,6 +4,7 @@ Ensures type safety and prevents malformed execution runs.
 """
 
 import yaml
+import json
 from pathlib import Path
 from typing import Any, Dict, Literal, TypedDict, cast
 
@@ -109,6 +110,43 @@ def load_and_validate_lora_config(config_path: Path | str) -> Dict[str, Any]:
     
     return config
 
+
+def validate_extraction(extraction_dir: str) -> list[str]:
+    """Validates the integrity of the extraction output directory and metadata."""
+    errors = []
+    path = Path(extraction_dir)
+    
+    # 1. Directory exists
+    if not path.exists():
+        errors.append(f"Extraction dir not found: {path}")
+        return errors  # early exit, rest is meaningless
+    
+    # 2. metadata.json exists and has required keys
+    meta_path = path / "metadata.json"
+    if not meta_path.exists():
+        errors.append("metadata.json missing")
+    else:
+        with open(meta_path, encoding="utf-8") as f:
+            meta = json.load(f)
+            
+        for key in ["n_layers", "d_model", "n_stimuli", "labels", "stimuli_ids"]:
+            if key not in meta:
+                errors.append(f"metadata.json missing key: {key}")
+                
+        if "labels" in meta:
+            for field in ["sign", "parity"]:
+                if field not in meta["labels"]:
+                    errors.append(f"metadata.json missing labels.{field}")
+        
+        # 3. All layer tensors present
+        if "n_layers" in meta:
+            for l in range(meta["n_layers"]):
+                pt = path / f"layer_{l:02d}.pt"
+                if not pt.exists():
+                    errors.append(f"Missing tensor: layer_{l:02d}.pt")
+                    
+    return errors    
+
 if __name__ == "__main__":
     import argparse
     import sys
@@ -116,9 +154,14 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Strict YAML configuration validator.")
     parser.add_argument("--probing", type=str, help="Path to config.yaml (RQ2/RQ3)")
     parser.add_argument("--lora", type=str, help="Path to lora_config.yaml")
+
+    parser.add_argument("--extraction", type=str, default=None,
+        metavar="EXTRACTION_DIR",
+        help="Validate extraction output dir (e.g. data/processed/pythia-1.4b).")
+    
     args = parser.parse_args()
 
-    if not args.probing and not args.lora:
+    if not args.probing and not args.lora and not args.extraction:
         parser.print_help()
         sys.exit(0)
 
@@ -143,9 +186,24 @@ if __name__ == "__main__":
             errors += 1
 
     print("-" * 39)
+
+    if args.extraction:
+        extr_errors = validate_extraction(args.extraction)
+        if extr_errors:
+            for err in extr_errors:
+                print(f"[FAIL] extraction: {err}")
+            errors += 1  # usa errors, non all_errors
+        else:
+            meta_path = Path(args.extraction) / "metadata.json"
+            with open(meta_path, encoding="utf-8") as f:
+                meta = json.load(f)
+            print(f"[OK] extraction: {args.extraction} "
+              f"({meta.get('n_layers')} layers, {meta.get('n_stimuli')} stimuli)")
+
+        # unico punto di uscita
     if errors > 0:
-        print(f"Validation FAILED with {errors} error(s). Aborting execution.")
+        print(f"Validation FAILED with {errors} error(s).")
         sys.exit(1)
     else:
-        print("All configurations are valid and strongly typed.")
+        print("All configurations are valid.")
         sys.exit(0)
