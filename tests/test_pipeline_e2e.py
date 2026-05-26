@@ -83,7 +83,8 @@ def e2e_env(tmp_path, monkeypatch):
         "multiclass_strategy": "ovr",
         "bootstrap_n_samples": 5, 
         "bootstrap_ci": 0.95,
-        "eval_subset_size": 10
+        "eval_subset_size": 10,
+        "min_class_samples": 2  # <-- FIX: Bypass hardcoded 10 threshold for tests
     }
     with open(configs_dir / "config.yaml", "w", encoding="utf-8") as f:
         yaml.dump(config, f)

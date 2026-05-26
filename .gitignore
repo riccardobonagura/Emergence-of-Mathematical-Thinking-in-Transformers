@@ -44,3 +44,8 @@ outputs/
 wandb/
 logs/
 *.log
+
+
+# Build artifacts
+*.egg-info/
+build/

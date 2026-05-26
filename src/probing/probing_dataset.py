@@ -21,7 +21,7 @@ import logging
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Tuple, TypedDict
+from typing import Any, Dict, List, Literal, Tuple, TypedDict, Optional
 
 from sklearn.model_selection import train_test_split
 
@@ -50,10 +50,14 @@ class PropConfig(TypedDict, total=False):
 class ProbingDataset:
     """Bridges JSONL stimuli and pre-extracted tensor indices for a probing run."""
 
-    def __init__(self, stimuli_path: Path, stimuli_ids: List[str]) -> None:
+    def __init__(self, stimuli_path: Path, stimuli_ids: List[str], cfg: Optional[Dict[str, Any]] = None) -> None:
         self.stimuli_path = stimuli_path
         # id → row index in the layer tensor (established at extraction time)
         self.id_to_idx: Dict[str, int] = {sid: i for i, sid in enumerate(stimuli_ids)}
+        
+        # FIX: threshold dinamico per i test, default 10 per la produzione
+        self._min_class_samples = cfg.get("min_class_samples", 10) if cfg else 10
+        
         self._df = self._load()
 
     # ── public API ────────────────────────────────────────────────────────────
@@ -61,7 +65,7 @@ class ProbingDataset:
     def get_property_split(
         self,
         prop_name: str,
-        prop_cfg:  PropConfig,
+        prop_cfg:  Any,  # Sostituisci con PropConfig se è importato esplicitamente
         train_split: float,
         global_seed: int,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -71,7 +75,10 @@ class ProbingDataset:
         reference rows in the per-layer .pt tensors.
         """
         indices, labels = self._extract(prop_name, prop_cfg)
-        self._check_min_class(labels, prop_name, threshold=10)
+        
+        # Sostituito threshold=10 con il parametro di istanza
+        self._check_min_class(labels, prop_name, threshold=self._min_class_samples)
+        
         indices, labels = self._undersample(indices, labels, prop_name, global_seed)
         return self._split(indices, labels, train_split, prop_name, global_seed)
 

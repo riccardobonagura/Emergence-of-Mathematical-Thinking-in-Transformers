@@ -7,9 +7,17 @@ extracts representations, and triggers the static probing validation.
 import gc
 import logging
 import subprocess
-import torch
 import yaml
 from pathlib import Path
+
+import torch
+import transformers
+
+# ENV-02: Protect against GPT-NeoX vmap/SDPA bug in newer transformers
+assert transformers.__version__ < "4.49", (
+    f"transformers {transformers.__version__} has a vmap/SDPA bug with GPT-NeoX. "
+    "Pin to <4.49: pip install 'transformers>=4.46,<4.49'"
+)
 
 from transformers import AutoModelForCausalLM
 from peft import PeftModel
@@ -42,7 +50,7 @@ def process_checkpoint(
     )
     
     # 2. Merge LoRA Weights
-    logger.info("Merging LoRA weights...")
+    logger.info("Merging LoRA weights (in-memory)...")
     peft_model = PeftModel.from_pretrained(base_hf, str(ckpt_dir))
     merged_hf = peft_model.merge_and_unload()
     
@@ -84,7 +92,7 @@ def process_checkpoint(
         logger.info(f"Evaluation complete for {ckpt_dir.name}.")
 
 
-def main():
+def main() -> None:
     logger = setup_logger()
     config_path = Path("configs/config.yaml")
     stimuli_path = Path("data/processed/dataset_master_v5.jsonl")

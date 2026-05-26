@@ -10,6 +10,7 @@ Expected config["properties"] schema (v5):
 """
 
 import argparse
+import json
 import logging
 import numpy as np
 import pandas as pd
@@ -29,9 +30,10 @@ import src.viz.probing_viz       as viz
 
 
 def process_task(
-    layer_idx, prop_name, model_dir,
-    engine, train_idx, test_idx, y_train, y_test, output_dir,
-):
+    layer_idx: int, prop_name: str, model_dir: Path,
+    engine: ProbingEngine, train_idx: np.ndarray, test_idx: np.ndarray, 
+    y_train: np.ndarray, y_test: np.ndarray, output_dir: Path
+) -> dict:
     """Atomic worker: load tensor slice → fit probe → persist weights → return metrics."""
     H       = load_hidden_states(model_dir / f"layer_{layer_idx:02d}.pt")
     result  = engine.run_layer(
@@ -45,10 +47,23 @@ def process_task(
 def main() -> None:
     parser = argparse.ArgumentParser(description="RQ2 static probing")
     parser.add_argument("--config", required=True, help="Path to config.yaml")
+    
+    # CLI-01: CLI overrides for regularization and output directory (useful for sweeps)
+    parser.add_argument("--C", type=float, default=None,
+        help="Override C regularization from config (for sweep).")
+    parser.add_argument("--output_dir", type=str, default=None,
+        help="Override output_dir from config (for sweep).")
+        
     args = parser.parse_args()
 
     with open(args.config) as f:
         config = yaml.safe_load(f)
+
+    # CLI-01: Apply configuration overrides dynamically without mutating config.yaml
+    if args.C is not None:
+        config["C"] = args.C
+    if args.output_dir is not None:
+        config["output_dir"] = args.output_dir
 
     output_dir  = Path(config["output_dir"])
     figures_dir = Path(config["figures_dir"])
@@ -62,8 +77,9 @@ def main() -> None:
     n_layers   = meta.get_n_layers()
     stimuli_ids = meta.get_stimuli_ids()
 
+    # Passiamo il config appena caricato
     dataset = ProbingDataset(
-        Path("data/processed/dataset_master_v5.jsonl"), stimuli_ids
+        Path("data/processed/dataset_master_v5.jsonl"), stimuli_ids, cfg=config
     )
     engine = ProbingEngine(config)
 
@@ -75,6 +91,20 @@ def main() -> None:
         )
         # Persist test indices now so RQ3 can reload them without re-splitting
         save_test_indices(output_dir, prop_name, te_idx)
+
+        # QOL-02: Sign index sanity check to prevent dataset merging artifacts (N-01 mitigation logic)
+        if prop_name == "sign":
+            categories_arr = np.array(meta.data["categories"])
+            sign_global_max = max(
+                i for i, cat in enumerate(categories_arr)
+                if cat == "CAT-SIGN"
+            )
+            assert te_idx.max() <= sign_global_max, (
+                f"FATAL: sign test indices include non-CAT-SIGN rows "
+                f"(max={te_idx.max()}, CAT-SIGN range 0-{sign_global_max}). "
+                "Category filter not applied — check config_rq2.yaml."
+            )
+            logger.info(f"  [OK] sign test idx range: 0–{te_idx.max()} ≤ {sign_global_max}")
 
         for l in range(n_layers):
             tasks.append((l, prop_name, model_dir, engine,
@@ -161,6 +191,25 @@ def main() -> None:
         )
 
     logger.info("RQ2 complete.")
+
+    # QOL-01: Console print of emergence summary at the end of the script
+    with open(output_dir / "emergence_summary.json") as f:
+        summary = json.load(f)
+        
+    logger.info("--- Emergence Summary ---")
+    for prop, v in summary["layers"].items():
+        emergence_layer = v['emergence_layer'] if v['emergence_layer'] is not None else "None"
+        logger.info(
+            f"  {prop}: emergence=layer {emergence_layer} "
+            f"peak=layer {v['peak_layer']} acc={v['peak_acc']:.4f}"
+        )
+
+    # T02 Follow-up Reminder: Confound Validation
+    logger.info("-" * 40)
+    logger.info("RQ2 Probing Pipeline Complete.")
+    logger.info("N-01 VALIDATION REQUIRED:")
+    logger.info("Run `python src/probing/run_confound_checks.py` to validate the N-01 confound hypothesis.")
+    logger.info("-" * 40)
 
 
 if __name__ == "__main__":
