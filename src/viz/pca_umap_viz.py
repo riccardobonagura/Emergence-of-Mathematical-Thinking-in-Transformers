@@ -124,3 +124,31 @@ def _to_numpy_2d(x: "torch.Tensor | np.ndarray") -> np.ndarray:
     if X.ndim != 2:
         raise ValueError(f"Expected 2-D array [n, d], got shape {X.shape}")
     return X.astype(np.float64, copy=False)
+
+
+if __name__ == "__main__":
+    import argparse, json, sys
+    from pathlib import Path
+    from src.probing.io_utils import load_hidden_states
+
+    parser = argparse.ArgumentParser(description="PCA scatter for key layers.")
+    parser.add_argument("--layers", nargs="+", type=int, default=[3, 14, 23])
+    parser.add_argument("--proc_dir", default="data/processed/pythia-1.4b")
+    parser.add_argument("--out_dir", default="results/figures/pca")
+    parser.add_argument("--backend", default="matplotlib")
+    args = parser.parse_args()
+
+    proc  = Path(args.proc_dir)
+    out   = Path(args.out_dir); out.mkdir(parents=True, exist_ok=True)
+    meta  = json.load(open(proc / "metadata.json"))
+    cats  = meta["categories"]
+    label_map = {"CAT-SIGN": 0, "CAT-PARITY": 1, "CTRL-NEU": 2, "CTRL-NUM": 3}
+    labels = [label_map[c] for c in cats]
+
+    for layer in args.layers:
+        H   = load_hidden_states(proc / f"layer_{layer:02d}.pt")
+        emb = compute_pca_embeddings(H, n_components=2)
+        fig = scatter_2d(emb, labels, title=f"PCA — Layer {layer:02d}", backend=args.backend)
+        path = out / f"pca_layer_{layer:02d}.png"
+        fig.savefig(path, dpi=150)
+        print(f"[OK] Layer {layer:02d} → {path}")

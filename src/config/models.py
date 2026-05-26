@@ -15,7 +15,8 @@ MODEL_REGISTRY: dict[str, ModelProfile] = {
         "hf_path": "EleutherAI/pythia-1.4b",
         "target_modules": ["query_key_value"], # GPT-NeoX fused attention module
         "extract_batch_size": 32,              # Safe for RTX 5080 (16GB) in forward pass
-        "needs_pad_token_fix": True            # NeoX has no default pad_token
+        "needs_pad_token_fix": True,            # NeoX has no default pad_token
+        "attn_implementation": "eager",  # GPT-NeoX + new transformers SDPA vmap bug
     },
     
     # --- FUTURE DOCKSTATIONS (Uncomment and test when needed) ---

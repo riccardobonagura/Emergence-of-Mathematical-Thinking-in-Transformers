@@ -25,11 +25,14 @@ def load_config(config_path: Path) -> dict:
     with open(config_path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
-def tokenize_metamath(example: dict, tokenizer: AutoTokenizer, max_len: int) -> dict:
-    """Format MetaMathQA as a standard prompt-completion text and tokenize."""
-    text = f"Question: {example['query']}\nAnswer: {example['response']}{tokenizer.eos_token}" # type: ignore
-    return tokenizer(text, truncation=True, max_length=max_len) # type: ignore
-
+def tokenize_metamath(examples: dict, tokenizer, max_len: int) -> dict:
+    """Format MetaMathQA as prompt-completion pairs and tokenize in batch."""
+    texts = [
+        f"Question: {q}\nAnswer: {a}{tokenizer.eos_token}"
+        for q, a in zip(examples["query"], examples["response"])
+    ]
+    return tokenizer(texts, truncation=True, max_length=max_len)
+    
 def main():
     logger = setup_logger()
     cfg_path = Path("configs/lora_config.yaml")
@@ -58,11 +61,11 @@ def main():
     )
 
     logger.info("Loading base model...")
-    base_model = AutoModelForCausalLM.from_pretrained(
-        model_id,
-        quantization_config=bnb_config,
-        device_map="auto"
-    )
+    load_kwargs: dict = {"quantization_config": bnb_config, "device_map": "auto"}
+    if attn_impl := profile.get("attn_implementation"):
+        load_kwargs["attn_implementation"] = attn_impl
+    base_model = AutoModelForCausalLM.from_pretrained(model_id, **load_kwargs)
+
     base_model.gradient_checkpointing_enable()
     base_model = prepare_model_for_kbit_training(base_model)
 
