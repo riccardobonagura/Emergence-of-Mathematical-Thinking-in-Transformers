@@ -1,52 +1,65 @@
 """
-run_confound_checks.py — Confound Mitigation Module (T02).
-Tests the N-01 hypothesis: does the "sign" probe actually encode magnitude |a-b|?
-Trains a linear regression on magnitude and compares its direction to the sign probe.
+run_confound_checks.py — Hardened Confound Mitigation & Epistemological Validation Module.
+Executes deep statistical checks on the N-01 Confound (First Operand Leakage in CAT-SIGN).
+
+Verifies if the "sign" probe trained in RQ2 genuinely decodes the abstract mathematical
+property or collapses into a surface token length/magnitude proxy of operand1.
+Enforces Benjamini-Hochberg FDR correction over control tests and dumps atomic metrics.
 """
 
+import argparse
 import sys
 import json
 import logging
-import re
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import torch
+import yaml
 from sklearn.linear_model import LinearRegression
 
-try:
-    from src.probing.directions import cosine_similarity
-except ImportError:
-    def cosine_similarity(v1: np.ndarray, v2: np.ndarray) -> float:
-        v1, v2 = v1.flatten(), v2.flatten()
-        return float(np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2)))
+from src.probing.directions import cosine_similarity
+from src.probing.seeds import get_seed
+from src.probing.io_utils import _atomic_write_csv
+from src.probing.stats import benjamini_hochberg_correction
 
-try:
-    from src.probing.seeds import get_seed
-except ImportError:
-    def get_seed(base_seed: int, operation: str, index: int = 0) -> int:
-        return base_seed + hash(operation) % 10000
 
 def setup_logger() -> logging.Logger:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
     return logging.getLogger("confound_check")
 
-def extract_magnitude(text: str) -> float:
-    """Extracts the magnitude |a - b| from the stimulus text."""
-    nums = re.findall(r'\b\d+\b', text)
-    if len(nums) >= 2:
-        return float(abs(int(nums[0]) - int(nums[1])))
-    return 0.0
+
+def extract_operand1(stimulus: dict) -> float:
+    """Extracts the exact scalar value of the first operand to check proxy memorization."""
+    return float(stimulus["labels"]["operand1"])
+
+
+def extract_magnitude_delta(stimulus: dict) -> float:
+    """Extracts the mathematical magnitude delta |a - b| of the expression."""
+    return float(abs(int(stimulus["labels"]["operand1"]) - int(stimulus["labels"]["operand2"])))
+
 
 def main() -> None:
     logger = setup_logger()
-    
-    dataset_path = Path("data/processed/dataset_master_v5.jsonl")
-    tensors_dir = Path("data/processed/pythia-1.4b")
-    weights_dir = Path("results/rq2_probing/weights")
-    test_idx_path = Path("results/rq2_probing/test_indices/sign_test_idx.npy")
-    out_csv = Path("results/rq2_probing/confound_checks.csv")
+
+    parser = argparse.ArgumentParser(description="Epistemological Confound Verification Suite")
+    parser.add_argument("--config", type=str, required=True, help="Path to the canonical config.yaml file.")
+    args = parser.parse_args()
+
+    with open(args.config, "r", encoding="utf-8") as f:
+        config = yaml.safe_load(f)
+
+    base_seed = config["seed"]
+    n_permutations = config.get("n_permutation_tests", 1000)
+    model_name = config.get("model_name", "pythia-1.4b")
+    output_dir = Path(config.get("output_dir", "results/rq2_probing"))
+
+    dataset_path = Path(config.get("dataset_path", "data/processed/dataset_master_v5.jsonl"))
+    tensors_dir = Path("data/processed") / model_name
+    weights_dir = output_dir / "weights"
+    test_idx_path = output_dir / "test_indices" / "sign_test_idx.npy"
+    out_csv = output_dir / "confound_checks_hardened.csv"
 
     for p in [dataset_path, tensors_dir, weights_dir, test_idx_path]:
         if not p.exists():
@@ -54,90 +67,138 @@ def main() -> None:
 
     out_csv.parent.mkdir(parents=True, exist_ok=True)
 
-    logger.info("Parsing dataset for CAT-SIGN magnitudes...")
+    logger.info("Parsing dataset dictionaries for CAT-SIGN tokens...")
     sign_global_indices = []
+    y_op1_list = []
     y_mag_list = []
-    
+
     with open(dataset_path, "r", encoding="utf-8") as f:
         for global_idx, line in enumerate(f):
             stimulus = json.loads(line)
             if stimulus.get("category") == "CAT-SIGN":
                 sign_global_indices.append(global_idx)
-                y_mag_list.append(extract_magnitude(stimulus["text"]))
-                
-    y_mag = np.array(y_mag_list)
-    logger.info(f"Found {len(sign_global_indices)} CAT-SIGN stimuli.")
+                y_op1_list.append(extract_operand1(stimulus))
+                y_mag_list.append(extract_magnitude_delta(stimulus))
 
-    # Global indexing schema to prevent merge-order dependency
+    y_op1 = np.array(y_op1_list)
+    y_mag = np.array(y_mag_list)
+    logger.info(f"Loaded {len(sign_global_indices)} CAT-SIGN elements for confound verification.")
+
     test_idx_global = np.load(test_idx_path)
-    sign_set = set(sign_global_indices)
     test_set = set(test_idx_global.tolist())
     train_idx_global = np.array([i for i in sign_global_indices if i not in test_set])
 
+    # Map global indices to subset targets
+    g2op1 = {g: o for g, o in zip(sign_global_indices, y_op1)}
     g2mag = {g: m for g, m in zip(sign_global_indices, y_mag)}
-    y_train = np.array([g2mag[i] for i in train_idx_global])
-    y_test = np.array([g2mag[i] for i in test_idx_global])
+
+    y_train_op1 = np.array([g2op1[i] for i in train_idx_global])
+    y_test_op1 = np.array([g2op1[i] for i in test_idx_global])
+
+    y_train_mag = np.array([g2mag[i] for i in train_idx_global])
+    y_test_mag = np.array([g2mag[i] for i in test_idx_global])
 
     layer_files = sorted(tensors_dir.glob("layer_*.pt"))
     n_layers = len(layer_files)
     if n_layers == 0:
-        raise ValueError(f"No extracted tensors found in {tensors_dir}")
+        raise ValueError(f"No extracted tensors found in {tensors_dir}. Run extraction first.")
 
-    results = []
-    logger.info(f"Initiating Confound Checks across {n_layers} layers...")
+    raw_results = []
+    logger.info(f"Initiating multi-dimensional check across {n_layers} layers with {n_permutations} permutations...")
 
     for l in range(n_layers):
         tensor_path = tensors_dir / f"layer_{l:02d}.pt"
         weight_path = weights_dir / f"layer_{l:02d}_sign.npy"
-        
-        if not weight_path.exists():
-            logger.warning(f"Probe weights missing for layer {l:02d}. Skipping.")
+        bias_path = weights_dir / f"layer_{l:02d}_sign_bias.npy"
+
+        if not weight_path.exists() or not bias_path.exists():
+            logger.warning(f"Probe weights/bias missing for layer {l:02d}. Skipping.")
             continue
 
-        # CRITICAL FIX: Layer-bound deterministic RNG instantiation
-        rng = np.random.default_rng(get_seed(42, "permutation", l))
+        # Core seed allocation isolated per layer
+        rng = np.random.default_rng(get_seed(base_seed, "confound_permutation", l))
 
-        # Load representations directly into the global index schema
         H_full = torch.load(tensor_path, map_location="cpu", weights_only=True).float().numpy()
         X_train = H_full[train_idx_global]
         X_test = H_full[test_idx_global]
 
-        # A) Train Magnitude Probe (Linear Regression)
-        mag_probe = LinearRegression()
-        mag_probe.fit(X_train, y_train)
-        mag_r2 = mag_probe.score(X_test, y_test)
-        
-        # B) Custom R2 Permutation Test
-        null_r2s = np.array([
-            LinearRegression().fit(X_train, rng.permutation(y_train)).score(X_test, y_test)
-            for _ in range(100)
-        ])
-        mag_r2_pvalue = float((null_r2s >= mag_r2).mean())
-
-        # C) Compare Directions
-        w_mag = mag_probe.coef_.flatten()
         w_sign = np.load(weight_path).flatten()
-        cos_sim = cosine_similarity(w_sign, w_mag)
-        
-        results.append({
+        b_sign = np.load(bias_path).flatten()[0]
+
+        # ── VERIFICATION 1: Train an explicit Operand-1 Control Probe ──
+        # Directly measures if operand1 is linearizable from the activation space
+        op1_probe = LinearRegression()
+        op1_probe.fit(X_train, y_train_op1)
+        op1_r2 = float(op1_probe.score(X_test, y_test_op1))
+
+        # Permutation gating for Operand-1 control R²
+        null_r2s_op1 = np.array([
+            LinearRegression().fit(X_train, rng.permutation(y_train_op1)).score(X_test, y_test_op1)
+            for _ in range(n_permutations)
+        ])
+        op1_pvalue = float((null_r2s_op1 >= op1_r2).mean())
+
+        # ── VERIFICATION 2: Vector Alignment (Cosine Similarity) ──
+        w_op1 = op1_probe.coef_.flatten()
+        cos_sign_vs_op1 = float(cosine_similarity(w_sign, w_op1))
+
+        # ── VERIFICATION 3: Train a Delta Magnitude Control Probe ──
+        # Does the layer encode the absolute size of the difference |a - b|?
+        mag_probe = LinearRegression()
+        mag_probe.fit(X_train, y_train_mag)
+        mag_r2 = float(mag_probe.score(X_test, y_test_mag))
+
+        w_mag = mag_probe.coef_.flatten()
+        cos_sign_vs_mag = float(cosine_similarity(w_sign, w_mag))
+
+        # ── VERIFICATION 4: Direct Behavior Leakage Check (Critical Triangulation) ──
+        # Evaluates if the frozen sign probe's logits correlate directly with operand1's scale.
+        # If it acts as a shortcut proxy, its predictions will align with operand1 bounds.
+        raw_preds = np.dot(X_test, w_sign) + b_sign
+
+        # Pearson correlation between the frozen sign probe's logits and operand1 values
+        if np.var(raw_preds) > 1e-9 and np.var(y_test_op1) > 1e-9:
+            corr_matrix = np.corrcoef(raw_preds, y_test_op1)
+            logit_corr_with_op1 = float(corr_matrix[0, 1])
+        else:
+            logit_corr_with_op1 = 0.0
+
+        raw_results.append({
             "layer": l,
-            "mag_r2": mag_r2,
-            "mag_r2_pvalue": mag_r2_pvalue,
-            "cosine_sign_vs_mag": cos_sim
+            "op1_decodability_r2": op1_r2,
+            "op1_r2_raw_pvalue": op1_pvalue,
+            "cosine_sign_vs_op1": cos_sign_vs_op1,
+            "mag_delta_r2": mag_r2,
+            "cosine_sign_vs_mag": cos_sign_vs_mag,
+            "sign_logits_correlation_with_op1": logit_corr_with_op1,
+            "is_significant_op1_leak": False  # Handled by Benjamini-Hochberg downstream
         })
 
-        # D) N-01 Sentinel Flag
-        if abs(cos_sim) > 0.8:
-            logger.warning(f"[WARNING] Layer {l:02d}: sign probe direction collinear with magnitude (cos={cos_sim:.3f}).")
+    # ── SECTION 5 — MULTIPLE COMPARISON CORRECTION (E-M-05) ───────────────────
+    # Apply Benjamini-Hochberg FDR correction across all layers to secure the p-values
+    p_values_op1 = [res["op1_r2_raw_pvalue"] for res in raw_results]
+    fdr_gating = benjamini_hochberg_correction(p_values_op1, fdr_level=0.05)
 
-    df = pd.DataFrame(results)
-    df.to_csv(out_csv, index=False)
-    logger.info(f"Confound checks complete. Results saved to {out_csv}")
+    for idx, is_significant in enumerate(fdr_gating):
+        raw_results[idx]["is_significant_op1_leak"] = is_significant
+
+        # Hard Sentinel Alarm flags
+        c_op1 = raw_results[idx]["cosine_sign_vs_op1"]
+        c_corr = raw_results[idx]["sign_logits_correlation_with_op1"]
+
+        if abs(c_op1) > 0.50 or abs(c_corr) > 0.50:
+            layer_idx = raw_results[idx]["layer"]
+            logger.warning(
+                f"[CRITICAL CONFOUND] Layer {layer_idx:02d}: Sign probe is heavily contaminated by Confound N-01! "
+                f"Cosine alignment: {c_op1:.3f} | Logit Correlation: {c_corr:.3f}. "
+                f"The probe is partially decoding operand magnitude shortcuts instead of abstract mathematical sign."
+            )
+
+    # Atomic serialization output dump to preserve disk tracking invariants
+    df_out = pd.DataFrame(raw_results)
+    _atomic_write_csv(out_csv, df_out.to_dict("records"), df_out.columns.tolist())
+    logger.info(f"[✔] Confound analysis successfully committed to disk -> {out_csv}")
+
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        logger = logging.getLogger("confound_check")
-        logger.error(f"Execution failed: {e}")
-        sys.exit(1)
+    main()
