@@ -1,0 +1,3 @@
+import inspect
+from transformer_lens import HookedTransformer
+print(inspect.signature(HookedTransformer.run_with_hooks))

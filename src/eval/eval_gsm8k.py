@@ -67,15 +67,17 @@ def append_to_trajectory(step: int, gsm8k_acc: float, csv_path: Path) -> None:
     _atomic_write_csv(df, csv_path)
 
 def parse_step_from_tag(tag: str) -> int:
-    if tag.lower() == "baseline":
+    if tag.lower() in ("baseline", "step0"):
         return 0
+    if tag.lower() == "final":
+        return 12343  # last training step
     if tag.lower().startswith("step"):
         return int(tag[4:])
     try:
         return int(tag)
     except ValueError:
-        raise ValueError(f"Cannot parse integer step from tag '{tag}'. Expected 'baseline' or 'step<N>'.")
-
+        raise ValueError(f"Cannot parse integer step from tag '{tag}'.")
+        
 def evaluate_model(model_path: str, tag: str, strategy: str, logger: logging.Logger) -> None:
     check_adapter_consistency(model_path, strategy)
     
