@@ -23,6 +23,9 @@ properties:
     class_names: ["positive", "negative"]
   # Aggiungi altre proprietà se presenti in stimuli.jsonl
 
-output_dir: results/rq2_sweep/C_10.0
+# Canonical RQ2 output. C=10.0 was selected from the C-sweep (results/rq2_sweep/);
+# the production run writes here, where the confound checkers, RQ3, eval_gsm8k,
+# and plot_rq3_trajectory all expect the weights/test_indices/dynamic to live.
+output_dir: results/rq2_probing
 figures_dir: "results/figures/rq2_probing"
 eval_subset_size: 200
