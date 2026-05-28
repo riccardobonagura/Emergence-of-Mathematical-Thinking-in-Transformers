@@ -36,7 +36,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Tuple
 
-from src.config.categories import ALL_CATS
+from src.config.categories import ALL_CATS, CTRL_CATS, MATH_CATS
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Schema
@@ -57,6 +57,27 @@ REQUIRED_CONTRAST_KEYS = {"pair_id", "varying_axis", "controlled_axes"}
 
 VALID_CATEGORIES: frozenset[str] = frozenset(ALL_CATS)
 VALID_SPLITS     = {"geometric_eval"}
+
+
+def category_balance_report(category_counts: Counter) -> dict:
+    """
+    Summarise category-size balance for downstream RQ1 fairness.
+
+    RQ1 (run_rq1.py) subsamples math and control to N = min(N_math, N_ctrl)
+    before CKA and aggregated ΔIso, so a large math/ctrl imbalance is not a
+    correctness bug — it silently discards data from the larger side and weakens
+    statistical power. This report surfaces the ratio so the imbalance is visible
+    at merge time rather than buried in the RQ1 logs.
+    """
+    n_math = sum(category_counts.get(c, 0) for c in MATH_CATS)
+    n_ctrl = sum(category_counts.get(c, 0) for c in CTRL_CATS)
+    ratio = (n_math / n_ctrl) if n_ctrl else float("inf")
+    return {
+        "n_math": n_math,
+        "n_ctrl": n_ctrl,
+        "math_over_ctrl_ratio": round(ratio, 3) if n_ctrl else None,
+        "rq1_subsample_n_per_side": min(n_math, n_ctrl),
+    }
 
 
 def validate_schema(
@@ -253,6 +274,18 @@ def main() -> None:
         for s in master_dataset:
             fh.write(json.dumps(s, ensure_ascii=False) + "\n")
 
+    # ── Category-balance diagnostic (RQ1 subsampling fairness) ─────────────
+    balance = category_balance_report(category_counts)
+    if balance["math_over_ctrl_ratio"] is not None and not (
+        0.8 <= balance["math_over_ctrl_ratio"] <= 1.25
+    ):
+        print(
+            f"\n  [WARNING] math/ctrl imbalance: {balance['n_math']} math vs "
+            f"{balance['n_ctrl']} ctrl (ratio {balance['math_over_ctrl_ratio']}). "
+            f"RQ1 will subsample both sides to N={balance['rq1_subsample_n_per_side']}, "
+            f"discarding the surplus and reducing statistical power."
+        )
+
     # ── Write metadata sidecar ─────────────────────────────────────────────
     meta_path = out_path.with_suffix(".meta.json")
     meta = {
@@ -262,6 +295,7 @@ def main() -> None:
         "allow_untokenized":     not require_tokenized,
         "schema_verified":       True,
         "category_distribution": dict(category_counts),
+        "category_balance":      balance,
         "split_distribution":    dict(split_counts),
         "token_length_strata":   dict(strata_counts),
         "probe_properties":      ["sign", "parity"],
