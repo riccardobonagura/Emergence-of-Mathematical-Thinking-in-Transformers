@@ -1,690 +1,445 @@
 """
-build_stimuli.py  —  v5
-=======================
+build_stimuli.py — v5
 Property-contrastive arithmetic stimuli for Pythia-1.4B geometric analysis.
 
-Research Questions
-------------------
-RQ1  Emergence   — Isotropy + CKA across Pythia-1.4B layers (24 layers).
-RQ2  Decoding    — Linear probes for sign and parity at the last token.
-RQ3  Dynamics    — Same stimuli re-evaluated at every MetaMath/QLoRA checkpoint.
+Provides:
+  - SignContrastGenerator   (CAT-SIGN, sign-of-result contrast)
+  - ParityContrastGenerator (CAT-PARITY, parity-of-result contrast)
+  - populate_token_fields() (HF tokenisation pass — required before merge_stimuli)
+  - validate_dataset()      (post-generation structural invariants)
+  - write_jsonl()           (atomic-style serialiser)
 
-Dataset categories
-------------------
-CAT-SIGN   (1 000 stimuli = 500 pairs)
-    Contrast:   (a − b = [positive])  vs  (b − a = [negative])
-    Operator:   subtraction (fixed)
-    Controlled: operator, |operands|, |result|, parity(|result|), template
-    Varies:     sign of result only
-    ⚠ N-01: first operand differs between pair members — unavoidable for any
-             sign contrast on a causal/left-to-right model; documented here,
-             not correctable without introducing a worse confound.
-
-CAT-PARITY (1 000 stimuli = 500 pairs)
-    Contrast:   (a + b = [even])  vs  (a + (b+1) = [odd])
-    Operator:   addition (fixed)
-    Controlled: operator, operand a, magnitude (|result| differs by 1), template
-    Varies:     parity of result only
-    ⚠ N-02: second operand b vs b+1 — minimum possible surface difference for
-             intra-operator parity contrast; documented here, not correctable.
-
-Operand domain
---------------
-Both generators use integers in [10, 50].  Every two-digit integer in this
-range is a **single token** on the GPT-NeoX (Pythia) tokenizer, giving a
-fixed four-token structure for the minimal template:
-
-    "12 - 7 ="  →  ["12", " -", " 7", " ="]          (minimal)
-    "Compute: 12 - 7 ="  →  ["Compute", ":", " 12", " -", " 7", " ="]
-    "Calculate 12 - 7 ="  →  ["Calculate", " 12", " -", " 7", " ="]
-
-The "=" token is **always the last token** of the input, so
-``equals_sign_index == last_token_index`` for every arithmetic stimulus.
-
-Templates
----------
-Three English templates per category, assigned round-robin across pairs,
-guaranteeing exact balance (500/3 ≈ 167 per template, remainder on TPL-*-1).
-
-Extraction strategy
--------------------
-Both sign and parity are extracted at "last_token" (= the "=" token).
-This follows the ROME/MEMIT finding that factual information integrates at
-the last token of the subject expression, not at the operator token.
-
-Layer strategy
---------------
-probe_layer_strategy = "all_layers" — representations at every layer of
-Pythia-1.4B (layers 0–23) are extracted and analysed independently.
-
-USAGE
------
-    python build_stimuli.py --n_pairs 500 \\
-                            --tokenizer EleutherAI/pythia-1.4b \\
-                            --output data/raw/stimuli_arithmetic_v5.jsonl
+Sign labels:   1 = positive, 0 = negative, -1 = sentinel (CAT-PARITY, CTRL-*)
+Parity labels: 0 = even, 1 = odd, -1 = sentinel (CTRL-*)
 """
-from __future__ import annotations
 
 import argparse
 import json
-import math
-import random
-from collections import Counter
-from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple, TypedDict
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Version & domain constants
-# ─────────────────────────────────────────────────────────────────────────────
+from src.probing.seeds import get_seed
 
 DATASET_VERSION = "v5"
 
-# Operand ranges — 2-digit integers, single-token on GPT-NeoX.
-SIGN_A_MIN, SIGN_A_MAX = 10, 50   # 'a' in (a − b); must be > b
-SIGN_B_MIN, SIGN_B_MAX = 10, 50   # 'b' in (a − b); must be < a
 
-PAR_A_MIN,  PAR_A_MAX  = 10, 50   # 'a' in (a + b)
-# Only even b values enter the pool.  Each entry (a, b_even) generates:
-#   member A  →  a + b_even        parity = a%2   (even+even or odd+even)
-#   member B  →  a + (b_even+1)    parity = 1−a%2
-# Restricting to even b values means no two pool entries share a "boundary"
-# text, eliminating all cross-pair duplicate stimuli.
-PAR_B_EVEN: List[int] = list(range(10, 49, 2))   # [10,12,...,48]  20 values
-
-# Templates — English, always ending with "=" so last_token == equals_sign_index.
-# Round-robin assignment: pair k gets template index (k % 3).
-SIGN_TEMPLATES: Dict[str, str] = {
-    "TPL-SIGN-1": "{a} - {b} =",
-    "TPL-SIGN-2": "Compute: {a} - {b} =",
-    "TPL-SIGN-3": "Calculate {a} - {b} =",
-}
-
-PARITY_TEMPLATES: Dict[str, str] = {
-    "TPL-PAR-1": "{a} + {b} =",
-    "TPL-PAR-2": "Compute: {a} + {b} =",
-    "TPL-PAR-3": "Calculate {a} + {b} =",
-}
+class Labels(TypedDict):
+    result: int
+    sign: int     # 1 = positive, 0 = negative, -1 = sentinel
+    parity: int   # 0 = even, 1 = odd, -1 = sentinel
+    operand1: int
+    operand2: int
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Dataclasses
-# ─────────────────────────────────────────────────────────────────────────────
-
-@dataclass(frozen=True)
-class Labels:
-    """Semantic labels for a single arithmetic stimulus."""
-    result:  int    # exact integer result
-    sign:    int    # 0 = non-negative, 1 = negative
-    parity:  int    # 0 = even, 1 = odd (based on abs(result))
-
-
-@dataclass(frozen=True)
-class Contrast:
-    """Contrastive pair metadata."""
-    pair_id:         str
-    varying_axis:    str         # "sign" | "parity"
+class Contrast(TypedDict):
+    pair_id: str
+    varying_axis: str
     controlled_axes: Tuple[str, ...]
 
 
-@dataclass(frozen=True)
-class TokenFields:
-    """
-    Tokenizer-dependent fields.  All indices are None until
-    populate_token_fields() is called.  Uses None (not -1) as the
-    unpopulated sentinel throughout (fixes I-12).
-    """
-    tokenizer_name:       Optional[str]        = None
-    n_tokens:             Optional[int]        = None
-    token_ids:            Optional[Tuple[int, ...]]   = None
-    token_strs:           Optional[Tuple[str, ...]]   = None
-    token_length_strata:  Optional[str]        = None  # "short"|"medium"|"long"
-    equals_sign_index:    Optional[int]        = None  # index of "=" token
-    last_token_index:     Optional[int]        = None  # always n_tokens - 1
+class TokenFields(TypedDict, total=False):
+    tokenizer_name: str
+    n_tokens: int
+    token_ids: Tuple[int, ...]
+    token_strs: Tuple[str, ...]
+    token_length_strata: str
+    equals_sign_index: int
+    last_token_index: int
 
 
-@dataclass(frozen=True)
-class Stimulus:
-    """One arithmetic or control stimulus."""
-    id:          str
-    text:        str
-    split:       str   # always "geometric_eval"
-    category:    str   # "CAT-SIGN" | "CAT-PARITY"
+class Stimulus(TypedDict):
+    id: str
+    text: str
+    split: str
+    category: str
     template_id: str
-    macro_format: str  # "symbolic_arithmetic"
-    extraction_strategy_by_property: Dict[str, str]
+    macro_format: str
     n_reasoning_steps: int
-    labels:      Labels
-    contrast:    Contrast
+    labels: Labels
+    contrast: Contrast
     token_fields: TokenFields
-    ood_target:  str
+    ood_target: str
     dataset_version: str
-    operand_digit_class: str   # e.g. "2d_2d"
-    probe_layer_strategy: str  # "all_layers"
-
-    def to_dict(self) -> dict:
-        return asdict(self)
-
-    def to_json(self) -> str:
-        return json.dumps(self.to_dict(), ensure_ascii=False)
+    probe_layer_strategy: str
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Internal helpers
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _digit_class(a: int, b: int) -> str:
-    """Return a string like '2d_2d' describing the digit counts of |a| and |b|."""
-    return f"{len(str(abs(a)))}d_{len(str(abs(b)))}d"
-
-
-def _sign_label(x: int) -> int:
-    return 1 if x < 0 else 0
-
-
-def _parity_label(x: int) -> int:
-    return abs(x) % 2
-
+# ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _token_length_strata(n: int) -> str:
-    if n <= 5:  return "short"
-    if n <= 8:  return "medium"
+    if n <= 5:
+        return "short"
+    if n <= 8:
+        return "medium"
     return "long"
 
 
-def _make_unpopulated_token_fields() -> TokenFields:
-    return TokenFields()
-
-
-_EXTRACTION_STRATEGY: Dict[str, str] = {
-    "sign":   "last_token",
-    "parity": "last_token",
-}
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# SignContrastGenerator
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Generators ───────────────────────────────────────────────────────────────
 
 class SignContrastGenerator:
-    """
-    Generates CAT-SIGN contrastive pairs.
-
-    Each pair consists of:
-        Member A:  "{a} - {b} ="   →   result = +(a−b),  sign = 0
-        Member B:  "{b} - {a} ="   →   result = −(a−b),  sign = 1
-
-    with a > b, a ∈ [SIGN_A_MIN, SIGN_A_MAX], b ∈ [SIGN_B_MIN, SIGN_A_MAX-1].
-
-    Pool size: Σ_{a=11}^{50} (a−10) = 820 distinct (a,b) pairs.
-    """
-
     CATEGORY = "CAT-SIGN"
+    TEMPLATES = [
+        "{a} - {b} =",
+        "Compute: {a} - {b} =",
+        "Calculate {a} - {b} =",
+    ]
 
-    def _build_pool(self) -> List[Tuple[int, int]]:
-        return [
-            (a, b)
-            for a in range(SIGN_A_MIN, SIGN_A_MAX + 1)
-            for b in range(SIGN_B_MIN, a)          # guarantees a > b
-        ]
-
-    def build(self, n_pairs: int, seed: int = 42) -> List[Stimulus]:
-        """
-        Sample n_pairs without replacement and return 2*n_pairs Stimulus objects.
-
-        Raises ValueError if n_pairs exceeds the pool size (820).
-        """
-        pool = self._build_pool()
-        if n_pairs > len(pool):
-            raise ValueError(
-                f"SignContrastGenerator: requested {n_pairs} pairs but pool "
-                f"has only {len(pool)}. Lower n_pairs or widen the operand range."
-            )
+    def build(self, n_pairs: int, seed: int) -> List[Stimulus]:
+        # Deterministic RNG seeded via project-wide get_seed discipline.
+        import random
         rng = random.Random(seed)
-        sampled = rng.sample(pool, n_pairs)
 
-        template_keys = list(SIGN_TEMPLATES.keys())
         stimuli: List[Stimulus] = []
+        pairs_generated = 0
+        seen = set()
 
-        for idx, (a, b) in enumerate(sampled):
-            tpl_key = template_keys[idx % len(template_keys)]
-            tpl_str = SIGN_TEMPLATES[tpl_key]
-            pair_id = f"SIGN-{idx:04d}"
-            stimuli.extend(self._make_pair(pair_id, a, b, tpl_key, tpl_str))
+        while pairs_generated < n_pairs:
+            a = rng.randint(10, 50)
+            b = rng.randint(10, 50)
+
+            key = (max(a, b), min(a, b))
+            if a == b or key in seen:
+                continue
+            seen.add(key)
+
+            if a < b:
+                a, b = b, a
+
+            tpl_idx = pairs_generated % len(self.TEMPLATES)
+            tpl = self.TEMPLATES[tpl_idx]
+            pair_id = f"SIGN-{pairs_generated:04d}"
+
+            # A: a − b → positive (sign=1); B: b − a → negative (sign=0).
+            stim_a = self._make_stim(
+                f"{pair_id}-A", tpl.format(a=a, b=b), pair_id,
+                res=a - b, sign=1, parity=(a - b) % 2, op1=a, op2=b, tpl_idx=tpl_idx,
+            )
+            stim_b = self._make_stim(
+                f"{pair_id}-B", tpl.format(a=b, b=a), pair_id,
+                res=b - a, sign=0, parity=abs(b - a) % 2, op1=b, op2=a, tpl_idx=tpl_idx,
+            )
+
+            stimuli.extend([stim_a, stim_b])
+            pairs_generated += 1
 
         return stimuli
 
-    def _make_pair(
-        self,
-        pair_id: str,
-        a: int, b: int,
-        tpl_key: str,
-        tpl_str: str,
-    ) -> Tuple[Stimulus, Stimulus]:
-        result_a = a - b    # positive
-        result_b = b - a    # negative
+    def _make_stim(
+        self, sid: str, text: str, pair_id: str,
+        res: int, sign: int, parity: int, op1: int, op2: int, tpl_idx: int,
+    ) -> Stimulus:
+        return {
+            "id": sid,
+            "text": text,
+            "split": "geometric_eval",
+            "category": self.CATEGORY,
+            "template_id": f"TPL-SIGN-{tpl_idx + 1}",
+            "macro_format": "symbolic_arithmetic",
+            "n_reasoning_steps": 1,
+            "labels": {
+                "result": res,
+                "sign": sign,
+                "parity": parity,
+                "operand1": op1,
+                "operand2": op2,
+            },
+            "contrast": {
+                "pair_id": pair_id,
+                "varying_axis": "sign",
+                "controlled_axes": ("operator", "operands_abs", "result_abs", "template"),
+            },
+            "token_fields": {},
+            "ood_target": "in_distribution",
+            "dataset_version": DATASET_VERSION,
+            "probe_layer_strategy": "all_layers",
+        }
 
-        common = dict(
-            split              = "geometric_eval",
-            category           = self.CATEGORY,
-            template_id        = tpl_key,
-            macro_format       = "symbolic_arithmetic",
-            extraction_strategy_by_property = dict(_EXTRACTION_STRATEGY),
-            n_reasoning_steps  = 1,
-            contrast           = Contrast(
-                pair_id         = pair_id,
-                varying_axis    = "sign",
-                controlled_axes = ("operator", "operands_abs", "result_abs",
-                                   "result_parity", "template"),
-            ),
-            token_fields       = _make_unpopulated_token_fields(),
-            ood_target         = "in_distribution",
-            dataset_version    = DATASET_VERSION,
-            operand_digit_class = _digit_class(a, b),
-            probe_layer_strategy = "all_layers",
-        )
-
-        stim_a = Stimulus(  
-            id      = f"{pair_id}-A",
-            text    = tpl_str.format(a=a, b=b),
-            labels  = Labels(result=result_a, sign=_sign_label(result_a),
-                             parity=_parity_label(result_a)),
-            **common, # type: ignore[arg-type]
-        ) 
-        stim_b = Stimulus(
-            id      = f"{pair_id}-B",
-            text    = tpl_str.format(a=b, b=a),   # operands swapped
-            labels  = Labels(result=result_b, sign=_sign_label(result_b),
-                             parity=_parity_label(result_b)),
-            **common, # type: ignore[arg-type]
-        ) 
-        return stim_a, stim_b
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# ParityContrastGenerator
-# ─────────────────────────────────────────────────────────────────────────────
 
 class ParityContrastGenerator:
-    """
-    Generates CAT-PARITY contrastive pairs.
-
-    Pool design
-    -----------
-    Pool entries are (a, b_even) where b_even ∈ PAR_B_EVEN = [10,12,...,48].
-    Each entry produces:
-        Member A:  "{a} + {b_A} ="   →  result parity = 0  (even)
-        Member B:  "{a} + {b_B} ="   →  result parity = 1  (odd)
-
-    The mapping from (a, b_even) to (b_A, b_B) depends on the parity of a:
-        a even:  b_A = b_even,    b_B = b_even + 1   (even+even=even, even+odd=odd)
-        a odd:   b_A = b_even+1,  b_B = b_even       (odd+odd=even,  odd+even=odd)
-
-    Member A is always the even result; Member B is always the odd result.
-
-    Why no duplicate texts
-    ----------------------
-    • All member-A texts use b_A ∈ {10,11,12,...,49} but b_A is even iff a is even
-      and odd iff a is odd.  Because a-parity and b-value together uniquely index
-      each text, and pool entries use non-adjacent b_even values (step=2), no two
-      distinct pool entries yield the same text.
-
-    Exact 50/50 balance
-    -------------------
-    Achieved via stratified sampling: n_pairs // 2 pairs from even-a pool and
-    n_pairs - n_pairs // 2 from odd-a pool.  Since every even-a pair contributes
-    (parity=0, parity=1) and every odd-a pair also contributes (parity=0, parity=1),
-    total counts are exactly equal.
-
-    Pool sizes
-    ----------
-        even-a pool : 21 values × 20 b_even = 420 pairs  (need ≤ 500//2 = 250)
-        odd-a pool  : 20 values × 20 b_even = 400 pairs  (need ≤ 500//2 = 250)
-
-    Known confound N-02
-    -------------------
-    b_A and b_B differ by exactly 1 (minimum possible for intra-operator parity
-    contrast).  This is unavoidable; documented in methodology.
-    """
-
     CATEGORY = "CAT-PARITY"
+    ADD_TEMPLATES = ["{a} + {b} =", "Compute: {a} + {b} =", "Calculate {a} + {b} ="]
+    SUB_TEMPLATES = ["{a} - {b} =", "Compute: {a} - {b} =", "Calculate {a} - {b} ="]
 
-    def _build_pools(self) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
-        even_a = [(a, b_e)
-                  for a in range(PAR_A_MIN, PAR_A_MAX + 1) if a % 2 == 0
-                  for b_e in PAR_B_EVEN]
-        odd_a  = [(a, b_e)
-                  for a in range(PAR_A_MIN, PAR_A_MAX + 1) if a % 2 == 1
-                  for b_e in PAR_B_EVEN]
-        return even_a, odd_a
-
-    def build(self, n_pairs: int, seed: int = 42) -> List[Stimulus]:
-        """
-        Sample n_pairs with stratified 50/50 parity balance.
-        Raises ValueError if n_pairs exceeds pool capacity.
-        """
-        even_pool, odd_pool = self._build_pools()
-        n_even = n_pairs // 2
-        n_odd  = n_pairs - n_even
-
-        if n_even > len(even_pool):
-            raise ValueError(
-                f"ParityContrastGenerator: even-a pool has {len(even_pool)} entries "
-                f"but {n_even} requested. Lower n_pairs."
-            )
-        if n_odd > len(odd_pool):
-            raise ValueError(
-                f"ParityContrastGenerator: odd-a pool has {len(odd_pool)} entries "
-                f"but {n_odd} requested. Lower n_pairs."
-            )
-
+    def build(self, n_pairs: int, seed: int) -> List[Stimulus]:
+        import random
         rng = random.Random(seed)
-        sampled = rng.sample(even_pool, n_even) + rng.sample(odd_pool, n_odd)
-        rng.shuffle(sampled)
 
-        template_keys = list(PARITY_TEMPLATES.keys())
         stimuli: List[Stimulus] = []
+        seen = set()
 
-        for idx, (a, b_even) in enumerate(sampled):
-            tpl_key = template_keys[idx % len(template_keys)]
-            tpl_str = PARITY_TEMPLATES[tpl_key]
-            pair_id = f"PAR-{idx:04d}"
-            stimuli.extend(self._make_pair(pair_id, a, b_even, tpl_key, tpl_str))
+        n_add = n_pairs // 2
+        n_sub = n_pairs - n_add
+
+        # Addition pool — b vs b+1 flips parity at fixed first operand.
+        add_generated = 0
+        while add_generated < n_add:
+            a = rng.randint(10, 50)
+            b = rng.randint(10, 49)  # b+1 ∈ [11,50] stays within single-token range
+            key = ("add", a, b)
+            if key in seen:
+                continue
+            seen.add(key)
+
+            tpl_idx = add_generated % len(self.ADD_TEMPLATES)
+            tpl = self.ADD_TEMPLATES[tpl_idx]
+            pair_id = f"PAR-{add_generated:04d}"
+
+            stimuli.extend(self._make_parity_pair(
+                pair_id, tpl, a, b, op="add", tpl_idx=tpl_idx,
+            ))
+            add_generated += 1
+
+        # Subtraction pool — same mechanism, but a > b strictly so result ≥ 1.
+        # Fix #8: b ∈ [10, a-1] includes the tight a=b+1 case (res=1, single token).
+        sub_generated = 0
+        while sub_generated < n_sub:
+            a = rng.randint(11, 50)
+            b = rng.randint(10, a - 1)
+            key = ("sub", a, b)
+            if key in seen:
+                continue
+            seen.add(key)
+
+            tpl_idx = sub_generated % len(self.SUB_TEMPLATES)
+            tpl = self.SUB_TEMPLATES[tpl_idx]
+            pair_id = f"PAR-{(n_add + sub_generated):04d}"
+
+            stimuli.extend(self._make_parity_pair(
+                pair_id, tpl, a, b, op="sub", tpl_idx=tpl_idx,
+            ))
+            sub_generated += 1
 
         return stimuli
 
-    def _make_pair(
-        self,
-        pair_id: str,
-        a: int,
-        b_even: int,
-        tpl_key: str,
-        tpl_str: str,
-    ) -> Tuple[Stimulus, Stimulus]:
-        b_odd = b_even + 1
-        # member A is always even result, member B always odd
-        if a % 2 == 0:
-            b_A, b_B = b_even, b_odd    # even+even=even, even+odd=odd
+    def _make_parity_pair(
+        self, pair_id: str, tpl: str, a: int, b: int, op: str, tpl_idx: int,
+    ) -> List[Stimulus]:
+        """
+        Build (-A, -B) deterministically so that -A is always the even-parity
+        member and -B the odd-parity member. Fix #9: removes the silent post-hoc
+        swap that previously broke pair_id audit semantics.
+        """
+        if op == "add":
+            res_b, res_bp1 = a + b, a + (b + 1)
+            text_b, text_bp1 = tpl.format(a=a, b=b), tpl.format(a=a, b=b + 1)
+            op2_b, op2_bp1 = b, b + 1
+        else:  # sub
+            res_b, res_bp1 = a - b, a - (b + 1)
+            text_b, text_bp1 = tpl.format(a=a, b=b), tpl.format(a=a, b=b + 1)
+            op2_b, op2_bp1 = b, b + 1
+
+        # Pick the even-parity result as A and the odd-parity result as B.
+        if res_b % 2 == 0:
+            even_res, even_text, even_op2 = res_b, text_b, op2_b
+            odd_res, odd_text, odd_op2 = res_bp1, text_bp1, op2_bp1
         else:
-            b_A, b_B = b_odd, b_even    # odd+odd=even,  odd+even=odd
+            even_res, even_text, even_op2 = res_bp1, text_bp1, op2_bp1
+            odd_res, odd_text, odd_op2 = res_b, text_b, op2_b
 
-        r_A, r_B = a + b_A, a + b_B
-        assert r_A % 2 == 0 and r_B % 2 == 1, (
-            f"Invariant violated: r_A={r_A}, r_B={r_B} for a={a}, b_even={b_even}"
+        prefix = "TPL-PAR-ADD" if op == "add" else "TPL-PAR-SUB"
+        stim_a = self._make_stim(
+            f"{pair_id}-A", even_text, pair_id,
+            res=even_res, parity=0, op1=a, op2=even_op2, tpl_idx=tpl_idx, tpl_prefix=prefix,
         )
-
-        common = dict(
-            split              = "geometric_eval",
-            category           = self.CATEGORY,
-            template_id        = tpl_key,
-            macro_format       = "symbolic_arithmetic",
-            extraction_strategy_by_property = dict(_EXTRACTION_STRATEGY),
-            n_reasoning_steps  = 1,
-            contrast           = Contrast(
-                pair_id         = pair_id,
-                varying_axis    = "parity",
-                controlled_axes = ("operator", "operand_a", "magnitude_pm1",
-                                   "template"),
-            ),
-            token_fields       = _make_unpopulated_token_fields(),
-            ood_target         = "in_distribution",
-            dataset_version    = DATASET_VERSION,
-            operand_digit_class = _digit_class(a, b_A),
-            probe_layer_strategy = "all_layers",
+        stim_b = self._make_stim(
+            f"{pair_id}-B", odd_text, pair_id,
+            res=odd_res, parity=1, op1=a, op2=odd_op2, tpl_idx=tpl_idx, tpl_prefix=prefix,
         )
+        return [stim_a, stim_b]
 
-        stim_a = Stimulus( 
-            id      = f"{pair_id}-A",
-            text    = tpl_str.format(a=a, b=b_A),
-            labels  = Labels(result=r_A, sign=_sign_label(r_A), parity=0),
-            **common, # type: ignore[arg-type]
-        ) 
-        stim_b = Stimulus( 
-            id      = f"{pair_id}-B",
-            text    = tpl_str.format(a=a, b=b_B),
-            labels  = Labels(result=r_B, sign=_sign_label(r_B), parity=1),
-            **common, # type: ignore[arg-type]
-        ) 
-        return stim_a, stim_b
+    def _make_stim(
+        self, sid: str, text: str, pair_id: str,
+        res: int, parity: int, op1: int, op2: int, tpl_idx: int, tpl_prefix: str,
+    ) -> Stimulus:
+        # CAT-PARITY: sign is sentinel — no ground-truth sign contrast here.
+        return {
+            "id": sid,
+            "text": text,
+            "split": "geometric_eval",
+            "category": self.CATEGORY,
+            "template_id": f"{tpl_prefix}-{tpl_idx + 1}",
+            "macro_format": "symbolic_arithmetic",
+            "n_reasoning_steps": 1,
+            "labels": {
+                "result": res,
+                "sign": -1,
+                "parity": parity,
+                "operand1": op1,
+                "operand2": op2,
+            },
+            "contrast": {
+                "pair_id": pair_id,
+                "varying_axis": "parity",
+                "controlled_axes": ("operator", "operand_a", "template"),
+            },
+            "token_fields": {},
+            "ood_target": "in_distribution",
+            "dataset_version": DATASET_VERSION,
+            "probe_layer_strategy": "all_layers",
+        }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Tokenisation
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Tokenisation ─────────────────────────────────────────────────────────────
 
 def populate_token_fields(
     stimuli: List[Stimulus],
     tokenizer_name: str,
 ) -> List[Stimulus]:
     """
-    Populate TokenFields for every stimulus using the given HuggingFace tokenizer.
+    Populate TokenFields for every stimulus using a HuggingFace tokenizer.
 
-    For CAT-SIGN and CAT-PARITY stimuli the "=" token is always last, so
-    equals_sign_index == last_token_index by construction.  The function
-    verifies this invariant and raises AssertionError if violated.
+    For CAT-SIGN / CAT-PARITY stimuli the "=" token must be the last token
+    (enforced by assertion — the extraction strategy depends on it).
+    For CTRL-* stimuli (no "=") equals_sign_index is set to None.
 
-    For CTRL stimuli (no "=" in text) equals_sign_index is set to None.
+    Mutates input dicts in place and returns the same list — callers may
+    discard the return value.
     """
     try:
         from transformers import AutoTokenizer
-    except ImportError:
+    except ImportError as exc:
         raise ImportError(
-            "transformers is required for tokenisation.\n"
+            "transformers is required for tokenisation. "
             "Install with: pip install transformers"
-        )
+        ) from exc
 
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name, use_fast=True)
 
-    populated: List[Stimulus] = []
     for s in stimuli:
-        ids   = tokenizer.encode(s.text, add_special_tokens=False)
-        strs  = tokenizer.convert_ids_to_tokens(ids)
-        n     = len(ids)
-        last  = n - 1
+        ids = tokenizer.encode(s["text"], add_special_tokens=False)
+        strs = tokenizer.convert_ids_to_tokens(ids)
+        n = len(ids)
+        last = n - 1
 
-        # Locate "=" — strip surrounding whitespace/Ġ prefix for comparison.
-        eq_idx: Optional[int] = None
+        # Locate "=" — strip GPT-NeoX leading-space marker "Ġ" before comparing.
+        eq_idx = None
         for i, tok in enumerate(strs):
-            clean = tok.replace("Ġ", "").replace("▁", "").strip()
-            if clean == "=":
+            if tok.replace("Ġ", "").replace("▁", "").strip() == "=":
                 eq_idx = i
 
-        # For arithmetic stimuli, "=" must be the last token.
-        if s.category.startswith("CAT-"):
+        if s["category"].startswith("CAT-"):
             assert eq_idx == last, (
-                f"Stimulus {s.id}: expected '=' at index {last} "
-                f"(last token), found at {eq_idx}.\n"
-                f"Text: {s.text!r}\nTokens: {strs}"
+                f"Stimulus {s['id']}: expected '=' at index {last} (last token), "
+                f"found at {eq_idx}.\nText: {s['text']!r}\nTokens: {strs}"
             )
 
-        tf = TokenFields(
-            tokenizer_name      = tokenizer_name,
-            n_tokens            = n,
-            token_ids           = tuple(ids),
-            token_strs          = tuple(strs),
-            token_length_strata = _token_length_strata(n),
-            equals_sign_index   = eq_idx,
-            last_token_index    = last,
-        )
-        populated.append(replace(s, token_fields=tf))
+        s["token_fields"] = {
+            "tokenizer_name": tokenizer_name,
+            "n_tokens": n,
+            "token_ids": tuple(ids),
+            "token_strs": tuple(strs),
+            "token_length_strata": _token_length_strata(n),
+            "equals_sign_index": eq_idx,
+            "last_token_index": last,
+        }
 
-    return populated
+    return stimuli
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Validation
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Validation ───────────────────────────────────────────────────────────────
 
 def validate_dataset(stimuli: List[Stimulus]) -> None:
     """
     Assert structural invariants on a fully generated (optionally tokenised)
-    dataset.  Raises AssertionError with a descriptive message on failure.
+    dataset. Raises AssertionError with a descriptive message on failure.
     """
-    sign_stimuli  = [s for s in stimuli if s.category == "CAT-SIGN"]
-    par_stimuli   = [s for s in stimuli if s.category == "CAT-PARITY"]
-    arith_stimuli = sign_stimuli + par_stimuli
+    from collections import Counter
 
-    # 1. Sign balance: exactly 50 % positive, 50 % negative in CAT-SIGN.
-    sign_dist = Counter(s.labels.sign for s in sign_stimuli)
-    assert sign_dist[0] == sign_dist[1], (
-        f"Sign imbalance in CAT-SIGN: {dict(sign_dist)}. "
-        "Expected equal counts of sign=0 and sign=1."
-    )
+    sign_stimuli = [s for s in stimuli if s["category"] == "CAT-SIGN"]
+    par_stimuli = [s for s in stimuli if s["category"] == "CAT-PARITY"]
 
-    # 2. Parity balance: exactly 50 % even, 50 % odd in CAT-PARITY.
-    par_dist = Counter(s.labels.parity for s in par_stimuli)
-    assert par_dist[0] == par_dist[1], (
-        f"Parity imbalance in CAT-PARITY: {dict(par_dist)}. "
-        "Expected equal counts of parity=0 and parity=1."
-    )
-
-    # 3. Pair coherence: every pair_id appears exactly twice within its category.
-    for cat_stimuli, cat_name in [(sign_stimuli, "CAT-SIGN"),
-                                   (par_stimuli, "CAT-PARITY")]:
-        pair_counts = Counter(s.contrast.pair_id for s in cat_stimuli)
-        bad = {k: v for k, v in pair_counts.items() if v != 2}
-        assert not bad, (
-            f"{cat_name}: pair_id(s) with count ≠ 2: {bad}"
+    # 50/50 sign balance in CAT-SIGN.
+    if sign_stimuli:
+        sign_dist = Counter(s["labels"]["sign"] for s in sign_stimuli)
+        assert sign_dist[0] == sign_dist[1], (
+            f"CAT-SIGN imbalance: {dict(sign_dist)}"
         )
 
-    # 4. Correct varying_axis field.
-    for s in sign_stimuli:
-        assert s.contrast.varying_axis == "sign", (
-            f"{s.id}: expected varying_axis='sign', got {s.contrast.varying_axis!r}"
+    # 50/50 parity balance in CAT-PARITY.
+    if par_stimuli:
+        par_dist = Counter(s["labels"]["parity"] for s in par_stimuli)
+        assert par_dist[0] == par_dist[1], (
+            f"CAT-PARITY imbalance: {dict(par_dist)}"
         )
+
+    # Each pair_id appears exactly twice (one -A, one -B).
+    for cat_stims, cat in [(sign_stimuli, "CAT-SIGN"), (par_stimuli, "CAT-PARITY")]:
+        pair_counts = Counter(s["contrast"]["pair_id"] for s in cat_stims)
+        odd = [k for k, v in pair_counts.items() if v != 2]
+        assert not odd, f"{cat}: pair_ids without exactly 2 members: {odd[:3]}"
+
+    # No duplicate stimulus IDs.
+    all_ids = [s["id"] for s in stimuli]
+    assert len(all_ids) == len(set(all_ids)), "Duplicate stimulus IDs detected."
+
+    # CAT-PARITY uses sentinel sign (-1) — no real sign label.
     for s in par_stimuli:
-        assert s.contrast.varying_axis == "parity", (
-            f"{s.id}: expected varying_axis='parity', got {s.contrast.varying_axis!r}"
+        assert s["labels"]["sign"] == -1, (
+            f"{s['id']}: CAT-PARITY must use sign sentinel -1, got {s['labels']['sign']}"
         )
 
-    # 5. Digit class uniformity — all arithmetic stimuli should be "2d_2d"
-    #    given the [10, 50] operand range.
-    bad_dc = [s.id for s in arith_stimuli if s.operand_digit_class != "2d_2d"]
-    assert not bad_dc, (
-        f"Non-2d_2d digit classes found: {bad_dc[:5]}"
-    )
-
-    # 6. No duplicate texts within each arithmetic category.
-    for cat_stimuli, cat_name in [(sign_stimuli, "CAT-SIGN"),
-                                   (par_stimuli, "CAT-PARITY")]:
-        texts = [s.text for s in cat_stimuli]
-        n_dup = len(texts) - len(set(texts))
-        assert n_dup == 0, (
-            f"{cat_name}: {n_dup} duplicate text(s) found."
-        )
-
-    # 7. Template balance within each category (each template used ≈ n/3 times).
-    for cat_stimuli, cat_name in [(sign_stimuli, "CAT-SIGN"),
-                                   (par_stimuli, "CAT-PARITY")]:
-        tpl_counts = Counter(s.template_id for s in cat_stimuli)
-        counts = sorted(tpl_counts.values())
-        # Allow at most 1 stimulus difference between most- and least-used template.
-        assert counts[-1] - counts[0] <= 2, (
-            f"{cat_name}: template imbalance {dict(tpl_counts)}. "
-            "Max allowed difference between template counts: 2."
-        )
-
-    # 8. Token-field checks (only if stimuli have been tokenised).
-    tokenised = [s for s in arith_stimuli if s.token_fields.n_tokens is not None]
-    if tokenised:
-        for s in tokenised:
-            assert s.token_fields.equals_sign_index is not None, (
-                f"{s.id}: tokenised but equals_sign_index is None."
-            )
-            assert s.token_fields.equals_sign_index == s.token_fields.last_token_index, (
-                f"{s.id}: equals_sign_index ({s.token_fields.equals_sign_index}) "
-                f"!= last_token_index ({s.token_fields.last_token_index})."
-            )
-            assert s.token_fields.tokenizer_name is not None, (
-                f"{s.id}: tokenizer_name not set in TokenFields."
-            )
-
-    # 9. CAT-SIGN invariant: |result_A| == |result_B| within each pair.
+    # CAT-SIGN: parity within each pair must be identical (a-b and b-a have same |result|).
     pair_map: Dict[str, List[Stimulus]] = {}
     for s in sign_stimuli:
-        pair_map.setdefault(s.contrast.pair_id, []).append(s)
-    for pid, pair in pair_map.items():
-        assert len(pair) == 2
-        assert abs(pair[0].labels.result) == abs(pair[1].labels.result), (
-            f"CAT-SIGN pair {pid}: |result| mismatch "
-            f"{pair[0].labels.result} vs {pair[1].labels.result}."
-        )
+        pair_map.setdefault(s["contrast"]["pair_id"], []).append(s)
+    for pid, members in pair_map.items():
+        if len(members) == 2:
+            assert members[0]["labels"]["parity"] == members[1]["labels"]["parity"], (
+                f"CAT-SIGN pair {pid}: parities differ — expected identical |result| parity"
+            )
 
-    # 10. CAT-PARITY invariant: result_B == result_A ± 1 within each pair.
-    pair_map_p: Dict[str, List[Stimulus]] = {}
+    # CAT-PARITY: -A is even, -B is odd (Fix #9 deterministic ordering).
     for s in par_stimuli:
-        pair_map_p.setdefault(s.contrast.pair_id, []).append(s)
-    for pid, pair in pair_map_p.items():
-        assert len(pair) == 2
-        diff = abs(pair[0].labels.result - pair[1].labels.result)
-        assert diff == 1, (
-            f"CAT-PARITY pair {pid}: result difference = {diff}, expected 1."
-        )
-        # Confirm member-A is always even (parity=0), member-B always odd (parity=1).
-        stim_a = next(s for s in pair if s.id.endswith("-A"))
-        stim_b = next(s for s in pair if s.id.endswith("-B"))
-        assert stim_a.labels.parity == 0, (
-            f"CAT-PARITY {pid}-A: expected parity=0, got {stim_a.labels.parity}."
-        )
-        assert stim_b.labels.parity == 1, (
-            f"CAT-PARITY {pid}-B: expected parity=1, got {stim_b.labels.parity}."
-        )
+        if s["id"].endswith("-A"):
+            assert s["labels"]["parity"] == 0, f"{s['id']}: -A should be even"
+        elif s["id"].endswith("-B"):
+            assert s["labels"]["parity"] == 1, f"{s['id']}: -B should be odd"
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# I/O
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Serialisation ────────────────────────────────────────────────────────────
 
-def write_jsonl(path: Path | str, stimuli: List[Stimulus]) -> Path:
-    out = Path(path)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(
-        "\n".join(s.to_json() for s in stimuli) + "\n",
-        encoding="utf-8",
-    )
-    return out
+def write_jsonl(out_path: Path, stimuli: List[Stimulus]) -> None:
+    """Atomic-style JSONL writer: temp file + rename to avoid partial reads."""
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = out_path.with_suffix(out_path.suffix + ".tmp")
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        for s in stimuli:
+            f.write(json.dumps(s, ensure_ascii=False) + "\n")
+    tmp_path.replace(out_path)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# CLI
-# ─────────────────────────────────────────────────────────────────────────────
+# ── CLI ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Build sign- and parity-contrastive arithmetic stimuli (v5)."
-    )
-    parser.add_argument("--n_pairs",   type=int, default=500,
-                        help="Pairs per category (default 500 → 1 000 stimuli each).")
-    parser.add_argument("--seed",      type=int, default=42)
-    parser.add_argument("--tokenizer", type=str, default=None,
-                        help="HuggingFace tokenizer name (e.g. EleutherAI/pythia-1.4b). "
-                             "Skip tokenisation if not provided.")
-    parser.add_argument("--output",    type=str,
-                        default="data/raw/stimuli_arithmetic_v5.jsonl")
+    parser = argparse.ArgumentParser(description="Build sign and parity arithmetic stimuli (v5).")
+    parser.add_argument("--n_pairs", type=int, default=500, help="Pairs per category (default 500 → 1000 stimuli each).")
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--tokenizer", type=str, default="EleutherAI/pythia-1.4b",
+                        help="HF tokenizer for populate_token_fields. Empty string skips tokenisation.")
+    parser.add_argument("--output", type=str, default="data/raw/stimuli_arithmetic_v5.jsonl")
     args = parser.parse_args()
 
-    print(f"Generating {args.n_pairs} pairs per category "
-          f"(seed={args.seed}) …")
+    # Seed routing through the project's get_seed discipline (S-03 SSOT, CLAUDE.md invariant).
+    sign_seed = get_seed(args.seed, "build_stimuli_sign", 0)
+    par_seed = get_seed(args.seed, "build_stimuli_parity", 0)
 
-    sign_gen  = SignContrastGenerator()
-    par_gen   = ParityContrastGenerator()
+    print(f"Generating {args.n_pairs} pairs per category (base_seed={args.seed}) ...")
 
-    sign_stimuli = sign_gen.build(args.n_pairs, seed=args.seed)
-    par_stimuli  = par_gen.build(args.n_pairs,  seed=args.seed + 1)
-    all_stimuli  = sign_stimuli + par_stimuli
+    sign_stimuli = SignContrastGenerator().build(args.n_pairs, seed=sign_seed)
+    par_stimuli = ParityContrastGenerator().build(args.n_pairs, seed=par_seed)
+    all_stimuli: List[Stimulus] = sign_stimuli + par_stimuli
 
     print(f"  CAT-SIGN   : {len(sign_stimuli):>5} stimuli")
     print(f"  CAT-PARITY : {len(par_stimuli):>5} stimuli")
 
     if args.tokenizer:
-        print(f"Tokenising with {args.tokenizer} …")
-        all_stimuli = populate_token_fields(all_stimuli, args.tokenizer)
+        print(f"Tokenising with {args.tokenizer} ...")
+        populate_token_fields(all_stimuli, args.tokenizer)
 
-    print("Validating …")
     validate_dataset(all_stimuli)
 
-    out = write_jsonl(args.output, all_stimuli)
-    print(f"✓  {len(all_stimuli)} stimuli written to {out}")
+    write_jsonl(Path(args.output), all_stimuli)
+    print(f"Dataset committed to {args.output}")
 
 
 if __name__ == "__main__":

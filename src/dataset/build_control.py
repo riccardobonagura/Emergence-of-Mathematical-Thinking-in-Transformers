@@ -1,415 +1,234 @@
 """
-build_control.py  —  v5
-=======================
-Generators for CTRL-NEU and CTRL-NUM control categories.
+build_control.py — Structural control categories generator.
+Sources unique generic sentences from pool files when available, falls back
+to a hard-coded diversity pool otherwise. Filters by token length when a
+tokenizer is provided.
 
-Both categories are in English (matching the arithmetic stimulus language)
-and use the GPT-NeoX / Pythia tokenizer for length matching.
-
-Length matching
----------------
-Arithmetic stimuli (CAT-SIGN, CAT-PARITY) tokenise to 4–6 tokens on
-GPT-NeoX.  Control stimuli are sampled so that their token-length
-distribution mirrors the arithmetic distribution (fixes N-04).
-
-The matching is performed by ``length_match_to_arithmetic()``, which
-takes the tokenised arithmetic stimuli as reference and resamples the
-control pool stratum-by-stratum.
-
-CTRL-NEU  —  English prose, no numbers
-    Short  (4–5 tokens) :  simple subject-verb(-object) phrases
-    Medium (6–7 tokens) :  + adjective or adverb
-    Long   (8–9 tokens) :  full clause with circumstantial phrase
-
-CTRL-NUM  —  English numeric context (non-arithmetic)
-    Short  (4–5 tokens) :  single-number contexts (platform, bus, floor)
-    Medium (6–7 tokens) :  two-number contexts (time, measures)
-    Long   (8–9 tokens) :  multi-number contexts (flights, contracts)
-
-Sentinel convention (fixes I-12)
----------------------------------
-equals_sign_index is always None for CTRL stimuli (no "=" in text).
-last_token_index is set to n_tokens - 1 after tokenisation.
-No "-1" sentinels are used anywhere in this file.
-
-USAGE
------
-    python build_control.py --category neu --n_stimuli 500 \\
-                            --tokenizer EleutherAI/pythia-1.4b \\
-                            --output data/raw/stimuli_ctrl_neu_v5.jsonl
-
-    python build_control.py --category num --n_stimuli 500 \\
-                            --tokenizer EleutherAI/pythia-1.4b \\
-                            --output data/raw/stimuli_ctrl_num_v5.jsonl
+Pairs with build_stimuli.py: both produce v5 Stimulus dicts (TypedDict).
 """
-from __future__ import annotations
 
-import argparse
+import logging
 import random
-import sys
-from abc import ABC, abstractmethod
-from collections import Counter
-from dataclasses import replace
-from itertools import product
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, List, Optional
 
-try:
-    from build_stimuli import (
-        DATASET_VERSION,
-        Contrast,
-        Labels,
-        Stimulus,
-        TokenFields,
-        _token_length_strata,
-        populate_token_fields,
-        write_jsonl,
-    )
-except ImportError:
-    print("[ERROR] build_stimuli.py not found in the same directory.")
-    sys.exit(1)
+from src.probing.seeds import get_seed
+
+from .build_stimuli import DATASET_VERSION, Stimulus
+
+log = logging.getLogger(__name__)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Shared defaults for control stimuli
-# ─────────────────────────────────────────────────────────────────────────────
+class LinguisticDiversityPool:
+    """Hard-coded structural pool for the combinatorial fallback path."""
+    NEU_SUBJECTS = [
+        "The artist", "A software", "The mountain", "A citizen", "The dog",
+        "A philosopher", "The river", "An engine", "The melody", "A chef",
+    ]
+    NEU_VERBS = [
+        "creates", "compiles", "stands", "votes", "sleeps",
+        "argues", "flows", "operates", "resolves", "cooks",
+    ]
+    NEU_OBJECTS = [
+        "a masterpiece", "the data", "in silence", "for change", "on the rug",
+        "about ethics", "to the sea", "with precision", "the tension", "a meal",
+    ]
 
-_CTRL_EXTRACTION_STRATEGY: Dict[str, str] = {
-    "sign":   "last_token",
-    "parity": "last_token",
-}
+    NUM_SUBJECTS = [
+        "The temperature", "Chapter", "The project", "Exactly",
+        "The patient", "Phase", "The company", "A fraction",
+    ]
+    NUM_VERBS = [
+        "reached", "starts on page", "requires", "costs",
+        "needs", "ends at step", "hired", "equals",
+    ]
+    NUM_OBJECTS = [
+        "degrees", "of the manual", "months of work", "dollars",
+        "days of rest", "of the process", "employees", "of the total",
+    ]
+    NUMBERS = [str(i) for i in range(10, 100)]
 
-_CTRL_LABELS = Labels(result=0, sign=-1, parity=-1)   # sentinel: no arithmetic
 
+class ControlGenerator:
+    """Generates generic prose reference stimuli for CTRL-NEU / CTRL-NUM."""
 
-def _ctrl_contrast(category: str) -> Contrast:
-    return Contrast(pair_id="N/A", varying_axis="N/A", controlled_axes=())
+    LENGTH_MIN = 4
+    LENGTH_MAX = 9
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Base class
-# ─────────────────────────────────────────────────────────────────────────────
-
-class ControlGenerator(ABC):
-    """Shared scaffolding: pool construction, sampling, schema assembly."""
-
-    CATEGORY:   str = ""
-    ID_PREFIX:  str = ""
-
-    def __init__(self, seed: int = 42) -> None:
+    def __init__(self, category: str, seed: int) -> None:
+        if category not in ("CTRL-NEU", "CTRL-NUM"):
+            raise ValueError(f"Unsupported control category: {category!r}")
+        self.category = category
         self.rng = random.Random(seed)
+        self.pool_dir = Path("data/processed")
 
-    @abstractmethod
-    def _build_pool_by_tier(self) -> Dict[str, List[str]]:
-        """Return {"short": [...], "medium": [...], "long": [...]}."""
+    # ── Pool loading ─────────────────────────────────────────────────────────
 
-    def build(self, n: int) -> List[Stimulus]:
+    def _load_pool_file(self, filename: str) -> List[str]:
+        path = self.pool_dir / filename
+        if not path.exists():
+            return []
+        with open(path, "r", encoding="utf-8") as f:
+            return [line.strip() for line in f if line.strip()]
+
+    # ── Fallback generators ──────────────────────────────────────────────────
+
+    def _generate_neu_fallback(self) -> str:
+        s = self.rng.choice(LinguisticDiversityPool.NEU_SUBJECTS)
+        v = self.rng.choice(LinguisticDiversityPool.NEU_VERBS)
+        o = self.rng.choice(LinguisticDiversityPool.NEU_OBJECTS)
+        return f"{s} {v} {o}."
+
+    def _generate_num_fallback(self) -> str:
+        s = self.rng.choice(LinguisticDiversityPool.NUM_SUBJECTS)
+        v = self.rng.choice(LinguisticDiversityPool.NUM_VERBS)
+        n = self.rng.choice(LinguisticDiversityPool.NUMBERS)
+        o = self.rng.choice(LinguisticDiversityPool.NUM_OBJECTS)
+        if self.rng.random() > 0.5:
+            return f"{s} {v} {n} {o}."
+        return f"{n} {o} {v} by {s.lower()}."
+
+    def _generate_fallback(self) -> str:
+        if self.category == "CTRL-NEU":
+            return self._generate_neu_fallback()
+        return self._generate_num_fallback()
+
+    # ── Build loop ───────────────────────────────────────────────────────────
+
+    def build(self, n_stimuli: int, tokenizer: Any = None) -> List[Stimulus]:
         """
-        Build n control stimuli sampled uniformly across the three tiers.
-        Raises ValueError when the pool of any tier is too small.
+        Generate `n_stimuli` control stimuli. When `tokenizer` is provided
+        (HuggingFace fast tokenizer interface — `.encode(text)`), each text is
+        accepted only if its token length falls in [LENGTH_MIN, LENGTH_MAX].
+        Without a tokenizer, no length filtering is applied.
         """
-        pool  = self._build_pool_by_tier()
-        tiers = ("short", "medium", "long")
-        base  = n // 3
-        rem   = n % 3
-        # distribute remainder to the first tiers
-        counts = {t: base + (1 if i < rem else 0)
-                  for i, t in enumerate(tiers)}
+        pool_filename = "ctrl_neu_pool.txt" if self.category == "CTRL-NEU" else "ctrl_num_pool.txt"
+        pool_sentences = self._load_pool_file(pool_filename)
 
-        selected: List[str] = []
-        for tier, count in counts.items():
-            if len(pool[tier]) < count:
-                raise ValueError(
-                    f"{self.__class__.__name__}: tier '{tier}' pool size "
-                    f"{len(pool[tier])} < requested {count}.  "
-                    "Reduce n or extend the word lists."
+        if pool_sentences and tokenizer is not None:
+            filtered = [
+                s for s in pool_sentences
+                if self.LENGTH_MIN <= len(tokenizer.encode(s)) <= self.LENGTH_MAX
+            ]
+            if len(filtered) >= n_stimuli:
+                pool_sentences = filtered
+            else:
+                log.warning(
+                    "Filtered pool (%d) under target (%d); engaging combinatorial fallback.",
+                    len(filtered), n_stimuli,
                 )
-            selected.extend(self.rng.sample(pool[tier], count))
 
-        self.rng.shuffle(selected)
-        return [
-            self._make_stimulus(f"{self.ID_PREFIX}-{i:04d}", text)
-            for i, text in enumerate(selected)
-        ]
+        stimuli: List[Stimulus] = []
+        seen_texts: set = set()
+        attempts = 0
+        max_attempts = n_stimuli * 20
 
-    def _make_stimulus(self, stim_id: str, text: str) -> Stimulus:
-        return Stimulus(
-            id           = stim_id,
-            text         = text,
-            split        = "geometric_eval",
-            category     = self.CATEGORY,
-            template_id  = f"{self.CATEGORY}-TPL",
-            macro_format = "natural_language",
-            extraction_strategy_by_property = dict(_CTRL_EXTRACTION_STRATEGY),
-            n_reasoning_steps = 0,
-            labels       = _CTRL_LABELS,
-            contrast     = _ctrl_contrast(self.CATEGORY),
-            token_fields = TokenFields(),   # all None — correct sentinel
-            ood_target   = "control",
-            dataset_version = DATASET_VERSION,
-            operand_digit_class = "N/A",
-            probe_layer_strategy = "all_layers",
-        )
+        while len(stimuli) < n_stimuli and attempts < max_attempts:
+            attempts += 1
 
+            text = self.rng.choice(pool_sentences) if pool_sentences else self._generate_fallback()
+            if text in seen_texts:
+                continue
 
-# ─────────────────────────────────────────────────────────────────────────────
-# NeutralGenerator  (CTRL-NEU)
-# ─────────────────────────────────────────────────────────────────────────────
+            if tokenizer is not None:
+                t_len = len(tokenizer.encode(text))
+                if not (self.LENGTH_MIN <= t_len <= self.LENGTH_MAX):
+                    continue
 
-class NeutralGenerator(ControlGenerator):
-    """
-    English natural-language prose without numbers or arithmetic structure.
+            seen_texts.add(text)
+            stimuli.append(self._make_stim(text, idx=len(stimuli)))
 
-    Word lists are chosen to produce 4–9 token sequences on GPT-NeoX
-    so that the length distribution matches CAT-SIGN / CAT-PARITY.
+        if len(stimuli) < n_stimuli:
+            raise ValueError(
+                f"Generation loop failed to yield {n_stimuli} valid {self.category} stimuli "
+                f"within [{self.LENGTH_MIN}, {self.LENGTH_MAX}] tokens "
+                f"(produced {len(stimuli)}). Pool may be missing or undersized."
+            )
 
-    Tier construction (product of word lists):
-      short  = S + V                →    8 × 8      =    64 texts
-      medium = S + V + O            →    8 × 8 × 9  =   576 texts
-      long   = S + V + O + ADV      →    8 × 8 × 9 × 8 = 4 608 texts
-    """
+        return stimuli
 
-    CATEGORY  = "CTRL-NEU"
-    ID_PREFIX = "CTRL-NEU"
-
-    # Short subjects (1 token each on GPT-NeoX)
-    _S = [
-    "Rain", "Wind", "Fog", "Snow", "Frost", "Dust", "Smoke", "Steam",  
-    "Hail", "Mist", "Ice", "Ash", "Dew", "Cloud",                     
-]
-
-    # Verbs: space-prefixed so they join cleanly (1–2 tokens each)
-    _V = [
-    "falls", "blows", "clears", "drifts",
-    "rises", "settles", "spreads", "fades",                           
-    "lifts", "swirls", "gathers", "melts", "flows",                   
-]
-
-    # Objects: short 1–2 word noun phrases
-    _O = [
-        "the hills", "the fields", "the rooftops",
-        "the streets", "the coastline", "the valleys",
-        "the forest", "the harbour", "the skyline",
-    ]
-
-    # Adverbial phrases (2–3 tokens each)
-    _ADV = [
-        "at dawn", "by midday", "each winter",
-        "in silence", "quite slowly", "every morning",
-        "before noon", "near dusk",
-    ]
-
-    def _build_pool_by_tier(self) -> Dict[str, List[str]]:
-        short  = [f"{s} {v}."           for s, v
-                  in product(self._S, self._V)]
-        medium = [f"{s} {v} over {o}."  for s, v, o
-                  in product(self._S, self._V, self._O)]
-        long   = [f"{s} {v} over {o} {adv}." for s, v, o, adv
-                  in product(self._S, self._V, self._O, self._ADV)]
-        return {"short": short, "medium": medium, "long": long}
+    def _make_stim(self, text: str, idx: int) -> Stimulus:
+        return {
+            "id": f"{self.category}_{idx:05d}",
+            "text": text,
+            "split": "geometric_eval",
+            "category": self.category,
+            "template_id": f"{self.category}-TPL",
+            "macro_format": "natural_language",
+            "n_reasoning_steps": 0,
+            "labels": {
+                "result": 0,
+                "sign": -1,
+                "parity": -1,
+                "operand1": 0,
+                "operand2": 0,
+            },
+            "contrast": {
+                "pair_id": "N/A",
+                "varying_axis": "N/A",
+                "controlled_axes": (),
+            },
+            "token_fields": {},
+            "ood_target": "control",
+            "dataset_version": DATASET_VERSION,
+            "probe_layer_strategy": "all_layers",
+        }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# NumericGenerator  (CTRL-NUM)
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Public factory helpers (used by test_dataset.py and pipeline scripts) ────
 
-class NumericGenerator(ControlGenerator):
-    """
-    English sentences containing numbers in non-arithmetic contexts
-    (platform numbers, times, identifiers, measurements).
-
-    Numbers are drawn from the same [10, 50] range as arithmetic stimuli
-    so that numeric magnitude is not a confounding factor in CKA comparisons.
-
-    Tier construction:
-      short  : 4 templates × 41 values          =   164 texts
-      medium : 4 templates × 41 × 41 combos     ≈  6 724 texts (sampled)
-      long   : 4 templates × 41 × 41 × 10       ≈ many  (sampled)
-    """
-
-    CATEGORY  = "CTRL-NUM"
-    ID_PREFIX = "CTRL-NUM"
-
-    _N  = list(range(10, 51))          # 41 values — matches arithmetic domain
-    _N2 = list(range(10, 51))
-    _CITY = [
-        "Paris", "Vienna", "Berlin", "Madrid", "Zurich",
-        "London", "Prague", "Lisbon", "Warsaw", "Dublin",
-    ]
-
-    def _build_pool_by_tier(self) -> Dict[str, List[str]]:
-        # Short: single-number sentences (4–5 tokens on GPT-NeoX)
-        short_templates = [
-            "Platform {a} is closed.",
-            "Floor {a} is restricted.",
-            "Gate {a} has boarded.",
-            "Ward {a} is full.",
-            "Room {a} is vacant.",
-        ]
-        short = [t.format(a=a)
-                 for t in short_templates
-                 for a in self._N]
-
-        # Medium: two-number sentences (6–7 tokens)
-        medium_templates = [
-            "The train departs at {a}:{b:02d}.",
-            "Room {a} fits {b} guests.",
-            "Section {a} holds {b} seats.",
-            "Line {a} stops at junction {b}.",
-        ]
-        medium = [t.format(a=a, b=b)
-                  for t in medium_templates
-                  for a in self._N
-                  for b in self._N2]
-
-        # Long: multi-number sentences (8–9 tokens)
-        long_templates = [
-            "Flight {a} departs from gate {b} to {city}.",
-            "Contract {a} covers {b} months and expires in {city}.",
-            "Route {a} has {b} stops before reaching {city}.",
-            "Unit {a} shares {b} resources with the {city} hub.",
-        ]
-        long = [t.format(a=a, b=b, city=c)
-                for t in long_templates
-                for a in self._N
-                for b in self._N2
-                for c in self._CITY]
-
-        return {"short": short, "medium": medium, "long": long}
+def generate_neutral_stimuli(n: int, seed: int, tokenizer: Any = None) -> List[Stimulus]:
+    """Convenience wrapper: deterministic CTRL-NEU stimuli via project seed discipline."""
+    derived = get_seed(seed, "build_control_neu", 0)
+    return ControlGenerator("CTRL-NEU", derived).build(n, tokenizer=tokenizer)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Length matching
-# ─────────────────────────────────────────────────────────────────────────────
+def generate_numeric_stimuli(n: int, seed: int, tokenizer: Any = None) -> List[Stimulus]:
+    """Convenience wrapper: deterministic CTRL-NUM stimuli via project seed discipline."""
+    derived = get_seed(seed, "build_control_num", 0)
+    return ControlGenerator("CTRL-NUM", derived).build(n, tokenizer=tokenizer)
+
 
 def length_match_to_arithmetic(
     ctrl_stimuli: List[Stimulus],
     arith_stimuli: List[Stimulus],
-    seed: int = 0,
+    seed: int,
 ) -> List[Stimulus]:
     """
-    Resample ``ctrl_stimuli`` so that the distribution of
-    ``token_length_strata`` mirrors that of ``arith_stimuli``.
+    Resample `ctrl_stimuli` so its token_length_strata distribution matches
+    the empirical distribution of `arith_stimuli`. Both lists must be tokenised
+    (populate_token_fields already called).
 
-    Both collections must already be tokenised (token_fields.n_tokens ≠ None).
-    Returns a new list of the same length as ``ctrl_stimuli``.
-
-    Raises RuntimeError if any stratum in the arithmetic distribution cannot
-    be matched from the control pool.
+    Stratified resampling with replacement within each stratum.
     """
-    # Compute arithmetic stratum distribution (proportions).
-    arith_strata = Counter(
-        s.token_fields.token_length_strata for s in arith_stimuli
-        if s.token_fields.token_length_strata is not None
-    )
-    total_arith = sum(arith_strata.values())
-    if total_arith == 0:
-        raise RuntimeError("arith_stimuli are not tokenised; run populate_token_fields first.")
+    from collections import Counter
 
-    n_ctrl = len(ctrl_stimuli)
-    # Build a stratum → [stimuli] map for the control pool.
-    ctrl_by_strata: Dict[str, List[Stimulus]] = {}
+    def strata(s: Stimulus) -> Optional[str]:
+        return s.get("token_fields", {}).get("token_length_strata")
+
+    arith_strata = [strata(s) for s in arith_stimuli if strata(s) is not None]
+    ctrl_pool_by_stratum: dict = {}
     for s in ctrl_stimuli:
-        k = s.token_fields.token_length_strata or "unknown"
-        ctrl_by_strata.setdefault(k, []).append(s)
+        st = strata(s)
+        if st is None:
+            continue
+        ctrl_pool_by_stratum.setdefault(st, []).append(s)
 
-    # Compute target counts for each stratum.
-    target: Dict[str, int] = {}
-    allocated = 0
-    strata_sorted = sorted(arith_strata.keys())
-    for i, stratum in enumerate(strata_sorted):
-        if i < len(strata_sorted) - 1:
-            count = round(n_ctrl * arith_strata[stratum] / total_arith)
-        else:
-            count = n_ctrl - allocated   # absorb rounding residual
-        target[stratum] = count
-        allocated += count
+    if not arith_strata or not ctrl_pool_by_stratum:
+        raise RuntimeError("length_match_to_arithmetic requires tokenised inputs on both sides.")
 
-    rng = random.Random(seed)
+    target_counts = Counter(arith_strata)
+    rng = random.Random(get_seed(seed, "length_match", 0))
+
     matched: List[Stimulus] = []
-    for stratum, count in target.items():
-        pool = ctrl_by_strata.get(stratum, [])
-        if len(pool) < count:
+    for stratum, target_n in target_counts.items():
+        pool = ctrl_pool_by_stratum.get(stratum, [])
+        if not pool:
             raise RuntimeError(
-                f"length_match: stratum '{stratum}' needs {count} control stimuli "
-                f"but pool only has {len(pool)}.  "
-                "Increase n_stimuli or widen the word lists."
+                f"Cannot length-match: arithmetic asks for {target_n} stimuli in stratum "
+                f"{stratum!r} but the control pool has none."
             )
-        matched.extend(rng.sample(pool, count))
+        # Sample with replacement so we hit target_n exactly.
+        matched.extend(rng.choices(pool, k=target_n))
 
-    rng.shuffle(matched)
     return matched
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Backward-compatible wrappers
-# ─────────────────────────────────────────────────────────────────────────────
-
-def generate_neutral_stimuli(n: int = 500, seed: int = 84) -> List[Stimulus]:
-    return NeutralGenerator(seed=seed).build(n)
-
-
-def generate_numeric_stimuli(n: int = 500, seed: int = 42) -> List[Stimulus]:
-    return NumericGenerator(seed=seed).build(n)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# CLI
-# ─────────────────────────────────────────────────────────────────────────────
-
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Build CTRL-NEU or CTRL-NUM control stimuli (v5)."
-    )
-    parser.add_argument("--category",   choices=["neu", "num"], required=True)
-    parser.add_argument("--n_stimuli",  type=int, default=500)
-    parser.add_argument("--seed",       type=int, default=42)
-    parser.add_argument("--tokenizer",  type=str, default=None,
-                        help="HuggingFace tokenizer for length matching and "
-                             "token-field population.")
-    parser.add_argument("--arith_jsonl", type=str, default=None,
-                        help="Path to tokenised arithmetic JSONL for length "
-                             "matching.  Required when --tokenizer is given.")
-    parser.add_argument("--output",     type=str, default=None)
-    args = parser.parse_args()
-
-    gen = (NeutralGenerator(seed=args.seed)
-           if args.category == "neu"
-           else NumericGenerator(seed=args.seed))
-    default_out = f"data/raw/stimuli_ctrl_{args.category}_v5.jsonl"
-
-    print(f"Generating {args.n_stimuli} {gen.CATEGORY} stimuli …")
-    stimuli = gen.build(args.n_stimuli)
-
-    if args.tokenizer:
-        print(f"Tokenising with {args.tokenizer} …")
-        stimuli = populate_token_fields(stimuli, args.tokenizer)
-
-        if args.arith_jsonl:
-            import json as _json
-            print(f"Length-matching to {args.arith_jsonl} …")
-            raw = Path(args.arith_jsonl).read_text(encoding="utf-8").strip().split("\n")
-
-            # Reconstruct minimal arith stubs for length_match (only needs strata).
-            from dataclasses import fields as dc_fields
-            arith_stubs: List[Stimulus] = []
-            for line in raw:
-                obj = _json.loads(line)
-                tf_raw = obj.get("token_fields", {})
-                stub_tf = TokenFields(
-                    tokenizer_name      = tf_raw.get("tokenizer_name"),
-                    n_tokens            = tf_raw.get("n_tokens"),
-                    token_length_strata = tf_raw.get("token_length_strata"),
-                )
-                # We only need token_length_strata, so a dummy Stimulus works.
-                arith_stubs.append(replace(stimuli[0], token_fields=stub_tf))
-
-            stimuli = length_match_to_arithmetic(stimuli, arith_stubs, seed=args.seed)
-            print(f"  After length match: {len(stimuli)} stimuli retained.")
-
-    out = write_jsonl(args.output or default_out, stimuli)
-    print(f"✓  {len(stimuli)} stimuli written to {out}")
-
-
-if __name__ == "__main__":
-    main()

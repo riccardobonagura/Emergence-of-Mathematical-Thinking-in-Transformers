@@ -8,8 +8,9 @@ dataset, enforcing schema consistency required by the analysis pipeline.
 
 Schema changes from v4 → v5
 -----------------------------
-  Removed:  operator (label), magnitude_log10, finetuning_train split
-  Added:    operand_digit_class, probe_layer_strategy
+  Removed:  operator (label), magnitude_log10, finetuning_train split,
+            extraction_strategy_by_property, operand_digit_class
+  Added:    probe_layer_strategy; labels.operand1 / labels.operand2
   Changed:  equals_sign_index sentinel is now None (never -1)
   Changed:  all stimuli carry split = "geometric_eval"
   Changed:  tokenizer_name is a required sub-field of token_fields
@@ -43,17 +44,16 @@ from src.config.categories import ALL_CATS
 
 REQUIRED_ROOT_KEYS = {
     "id", "text", "split", "template_id", "macro_format", "category",
-    "extraction_strategy_by_property", "n_reasoning_steps", "labels",
+    "n_reasoning_steps", "labels",
     "contrast", "token_fields", "ood_target", "dataset_version",
-    "operand_digit_class", "probe_layer_strategy",
+    "probe_layer_strategy",
 }
 
-REQUIRED_LABELS_KEYS     = {"result", "sign", "parity"}
-REQUIRED_TOKEN_KEYS      = {"n_tokens", "token_ids", "token_strs",
-                            "token_length_strata", "equals_sign_index",
-                            "last_token_index", "tokenizer_name"}
-REQUIRED_CONTRAST_KEYS   = {"pair_id", "varying_axis", "controlled_axes"}
-REQUIRED_EXTRACTION_KEYS = {"sign", "parity"}
+REQUIRED_LABELS_KEYS   = {"result", "sign", "parity"}
+REQUIRED_TOKEN_KEYS    = {"n_tokens", "token_ids", "token_strs",
+                          "token_length_strata", "equals_sign_index",
+                          "last_token_index", "tokenizer_name"}
+REQUIRED_CONTRAST_KEYS = {"pair_id", "varying_axis", "controlled_axes"}
 
 VALID_CATEGORIES: frozenset[str] = frozenset(ALL_CATS)
 VALID_SPLITS     = {"geometric_eval"}
@@ -117,21 +117,19 @@ def validate_schema(
     if missing_con:
         return False, f"Missing contrast keys: {missing_con}"
 
-    # ── extraction_strategy_by_property ────────────────────────────────────
-    esp = stimulus["extraction_strategy_by_property"]
-    if not isinstance(esp, dict):
-        return False, "'extraction_strategy_by_property' must be a dict."
-    missing_esp = REQUIRED_EXTRACTION_KEYS - esp.keys()
-    if missing_esp:
-        return False, f"Missing extraction_strategy keys: {missing_esp}"
-
     # ── token_fields ───────────────────────────────────────────────────────
     tf = stimulus["token_fields"]
     if not isinstance(tf, dict):
         return False, "'token_fields' must be a dict."
-    missing_tf = REQUIRED_TOKEN_KEYS - tf.keys()
-    if missing_tf:
-        return False, f"Missing token_fields keys: {missing_tf}"
+
+    # Freshly built stimuli carry an empty token_fields ({}); it is populated
+    # only by populate_token_fields(). Enforce the full key contract whenever
+    # tokenisation is required or any token field is already present — but let
+    # an untokenised stimulus through when --allow-untokenized is active.
+    if require_tokenized or tf:
+        missing_tf = REQUIRED_TOKEN_KEYS - tf.keys()
+        if missing_tf:
+            return False, f"Missing token_fields keys: {missing_tf}"
 
     if require_tokenized and tf.get("n_tokens") is None:
         return False, (
