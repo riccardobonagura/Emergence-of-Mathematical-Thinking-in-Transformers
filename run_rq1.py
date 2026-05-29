@@ -9,6 +9,7 @@ config-driven statistical framework.
 """
 
 import argparse
+import json
 import logging
 import sys
 from pathlib import Path
@@ -53,7 +54,7 @@ def main() -> None:
     global_seed = int(config["seed"])
     PROC_DIR = Path("data/processed") / config["model_name"]
     STIMULI_PATH = Path("data/processed/dataset_master_v5.jsonl")
-    OUT_DIR = Path(config.get("output_dir", "results/rq1_emergence"))
+    OUT_DIR = Path("results/rq1_emergence")
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
     # Enforce pre-flight extraction existence check
@@ -88,6 +89,23 @@ def main() -> None:
             f"Math indices: {math_idx_raw.size}, Control indices: {ctrl_idx_raw.size}. Check configuration mapping."
         )
 
+    # ── REVIEWER-MANDATED BASELINE INDICES ────────────────────────────────────
+    ctrl_neu_idx_raw = np.where(categories == "CTRL-NEU")[0]
+    ctrl_num_idx_raw = np.where(categories == "CTRL-NUM")[0]
+
+    with open(STIMULI_PATH, "r", encoding="utf-8") as f:
+        template_ids = np.array([json.loads(line).get("template_id", "") for line in f if line.strip()])
+
+    bare_templates = {t for t in np.unique(template_ids) if t.startswith("TPL-") and t.endswith("-1")}
+    math_mask = np.isin(categories, list(MATH_CATS))
+    math_bare_idx_raw = np.where(math_mask & np.isin(template_ids, list(bare_templates)))[0]
+    math_prefixed_idx_raw = np.where(math_mask & ~np.isin(template_ids, list(bare_templates)) & (template_ids != ""))[0]
+
+    logger.info(
+        f"Baseline groups: CTRL-NEU={ctrl_neu_idx_raw.size}, CTRL-NUM={ctrl_num_idx_raw.size}, "
+        f"math_bare={math_bare_idx_raw.size}, math_prefixed={math_prefixed_idx_raw.size}"
+    )
+
     logger.info("--- STARTING RQ1 METHODOLOGICALLY HARDENED EMBEDDING ANALYSIS ---")
 
     # ── RQ1-03: ISOTROPY ANALYSIS SEED DISCIPLINE ROUTING ─────────────────────
@@ -117,6 +135,28 @@ def main() -> None:
     # Sort indices to maintain sequential row caching optimizations
     math_idx.sort()
     ctrl_idx.sort()
+
+    # ── BASELINE SUBSAMPLING (balanced CTRL-NEU vs CTRL-NUM, bare vs prefixed) ──
+    has_ctrl_baseline = ctrl_neu_idx_raw.size > 0 and ctrl_num_idx_raw.size > 0
+    has_tpl_baseline = math_bare_idx_raw.size > 0 and math_prefixed_idx_raw.size > 0
+
+    if has_ctrl_baseline:
+        n_ctrl_baseline = min(ctrl_neu_idx_raw.size, ctrl_num_idx_raw.size)
+        rng_ctrl_bl = np.random.default_rng(get_seed(global_seed, "rq1_ctrl_subsampling", 0))
+        ctrl_neu_idx = np.sort(rng_ctrl_bl.choice(ctrl_neu_idx_raw, size=n_ctrl_baseline, replace=False))
+        ctrl_num_idx = np.sort(rng_ctrl_bl.choice(ctrl_num_idx_raw, size=n_ctrl_baseline, replace=False))
+        logger.info(f"Baseline A (CTRL-NEU vs CTRL-NUM): N={n_ctrl_baseline} per side")
+    else:
+        logger.warning("Baseline A skipped: CTRL-NEU or CTRL-NUM group is empty")
+
+    if has_tpl_baseline:
+        n_tpl_baseline = min(math_bare_idx_raw.size, math_prefixed_idx_raw.size)
+        rng_tpl_bl = np.random.default_rng(get_seed(global_seed, "rq1_template_subsampling", 0))
+        math_bare_idx = np.sort(rng_tpl_bl.choice(math_bare_idx_raw, size=n_tpl_baseline, replace=False))
+        math_prefixed_idx = np.sort(rng_tpl_bl.choice(math_prefixed_idx_raw, size=n_tpl_baseline, replace=False))
+        logger.info(f"Baseline B (bare vs prefixed math): N={n_tpl_baseline} per side")
+    else:
+        logger.warning("Baseline B skipped: bare or prefixed template group is empty")
 
     # ── SECTION 2 — ALIGNED EVOLUTIONARY & INTER-CATEGORY CKA ANALYSIS ────────
     # CAVEAT (extraction-position asymmetry): math states are read at the "=" token,
@@ -149,11 +189,22 @@ def main() -> None:
         H_prev_math, H_prev_ctrl, seed=inter_seed_l0
     )
 
+    cka_ctrl_bl_0 = compute_cka_intercategory(
+        H_prev[ctrl_neu_idx], H_prev[ctrl_num_idx],
+        seed=get_seed(global_seed, "cka_ctrl_baseline_layer", 0)
+    ) if has_ctrl_baseline else float("nan")
+    cka_tpl_bl_0 = compute_cka_intercategory(
+        H_prev[math_bare_idx], H_prev[math_prefixed_idx],
+        seed=get_seed(global_seed, "cka_template_baseline_layer", 0)
+    ) if has_tpl_baseline else float("nan")
+
     results.append({
         "layer": 0,
         "cka_evo_math": 1.0,
         "cka_evo_ctrl": 1.0,
         "cka_inter_mean": round(cka_inter_point_0, 6),
+        "cka_ctrl_neu_vs_num": round(cka_ctrl_bl_0, 6) if has_ctrl_baseline else None,
+        "cka_math_template_baseline": round(cka_tpl_bl_0, 6) if has_tpl_baseline else None,
         "delta_cka_evolution": 0.0
     })
 
@@ -180,11 +231,22 @@ def main() -> None:
             H_curr_math, H_curr_ctrl, seed=inter_seed
         )
 
+        cka_ctrl_bl = compute_cka_intercategory(
+            H_curr[ctrl_neu_idx], H_curr[ctrl_num_idx],
+            seed=get_seed(global_seed, "cka_ctrl_baseline_layer", l)
+        ) if has_ctrl_baseline else float("nan")
+        cka_tpl_bl = compute_cka_intercategory(
+            H_curr[math_bare_idx], H_curr[math_prefixed_idx],
+            seed=get_seed(global_seed, "cka_template_baseline_layer", l)
+        ) if has_tpl_baseline else float("nan")
+
         results.append({
             "layer": l,
             "cka_evo_math": round(cka_m, 6),
             "cka_evo_ctrl": round(cka_c, 6),
             "cka_inter_mean": round(cka_inter_point, 6),
+            "cka_ctrl_neu_vs_num": round(cka_ctrl_bl, 6) if has_ctrl_baseline else None,
+            "cka_math_template_baseline": round(cka_tpl_bl, 6) if has_tpl_baseline else None,
             "delta_cka_evolution": round(delta_cka, 6)
         })
 

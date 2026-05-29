@@ -168,7 +168,7 @@ def extract_from_model(model, stimuli: list[dict], out_dir: Path, batch_size: in
             "operand1": [s.get("labels", {}).get("operand1", 0) for s in stimuli],
             "operand2": [s.get("labels", {}).get("operand2", 0) for s in stimuli]
         },
-        "probe_strategy": "last_token",
+        "probe_strategy": "gathered_terminal",
         "dataset_version": default_version
     }
 

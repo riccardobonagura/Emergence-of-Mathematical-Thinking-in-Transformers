@@ -382,6 +382,7 @@ def compute_cka_intercategory_all_layers(
     math_indices: np.ndarray,
     generic_indices: np.ndarray,
     device: str = "cpu",
+    seed: int = 42,
 ) -> np.ndarray:
     """
     Calcola CKA inter-categoria per ogni layer del modello.
@@ -410,7 +411,7 @@ def compute_cka_intercategory_all_layers(
         H_math    = H_l[math_indices]     # (n_math,    d)
         H_generic = H_l[generic_indices]  # (n_generic, d)
 
-        cka_intercategory[l] = compute_cka_intercategory(H_math, H_generic)
+        cka_intercategory[l] = compute_cka_intercategory(H_math, H_generic, seed=seed)
 
     return cka_intercategory
 

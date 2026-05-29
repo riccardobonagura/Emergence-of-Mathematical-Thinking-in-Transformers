@@ -133,8 +133,7 @@ def main() -> None:
         gaps_test = all_gaps[test_idx]
 
         # ── Deterministic property offset to diversify control subsets ──
-        prop_offset = hash(prop_name) % 1000
-        ctrl_seed = get_seed(config["seed"], "ctrl_sampling", prop_offset)
+        ctrl_seed = get_seed(config["seed"], f"ctrl_sampling_{prop_name}", 0)
         rng = np.random.default_rng(ctrl_seed)
 
         ctrl_idx = rng.choice(ctrl_idx_global, size=min(len(ctrl_idx_global), len(test_idx)), replace=False)

@@ -191,8 +191,8 @@ def test_rq1_pipeline(mock_iso, mock_load, mock_pipeline_env, monkeypatch) -> No
     with patch.object(sys, "argv", test_args):
         run_rq1.main()
 
-    # The shared config routes output_dir to out_rq2, so RQ1 lands there too
-    result_csv = env["out_rq2"] / "cka_results_annotated.csv"
+    out_rq1 = env["root"] / "results" / "rq1_emergence"
+    result_csv = out_rq1 / "cka_results_annotated.csv"
     assert result_csv.exists(), "RQ1 failed to commit the annotated metrics table to disk."
 
     df = pd.read_csv(result_csv)
@@ -201,12 +201,12 @@ def test_rq1_pipeline(mock_iso, mock_load, mock_pipeline_env, monkeypatch) -> No
     assert len(df) == 24, "Layer indices mismatch inside the output metrics table rows."
 
     # M-03: per-layer inter-category CKA vector persisted as .npy
-    cka_npy = env["out_rq2"] / "cka_intercategory.npy"
+    cka_npy = out_rq1 / "cka_intercategory.npy"
     assert cka_npy.exists(), "RQ1 did not persist cka_intercategory.npy (M-03)."
     assert np.load(cka_npy).shape == (24,), "cka_intercategory.npy must have one entry per layer."
 
     # M-05: balanced aggregated isotropy table with equal-N math vs ctrl pools
-    iso_csv = env["out_rq2"] / "isotropy_aggregated_balanced.csv"
+    iso_csv = out_rq1 / "isotropy_aggregated_balanced.csv"
     assert iso_csv.exists(), "RQ1 did not write isotropy_aggregated_balanced.csv (M-05)."
     df_iso = pd.read_csv(iso_csv)
     assert {"layer", "iso_math", "iso_ctrl", "delta_iso", "n_per_side"}.issubset(df_iso.columns), \
