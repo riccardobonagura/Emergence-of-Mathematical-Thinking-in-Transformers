@@ -21,18 +21,19 @@ from joblib import Parallel, delayed
 # Import centralized Single Source of Truth architecture registers
 from src.config.models import get_model_profile
 from src.probing.io_utils import _atomic_write_json, setup_logging, MetadataHandler
+from src.probing.seeds import get_seed
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("io_smoke_test")
 
 
-def simulate_layer_io_load(layer_idx: int, output_dir: Path, d_model: int, n_stimuli: int) -> float:
+def simulate_layer_io_load(layer_idx: int, output_dir: Path, d_model: int, n_stimuli: int, seed: int = 0) -> float:
     """Emulates worker write cycles by allocating and persisting random weight vectors."""
     start_time = time.perf_counter()
 
-    # Mock unscaled projection coefficient parameters weights profile matrix
-    w_mock = np.random.randn(d_model).astype(np.float64)
-    b_mock = np.random.randn(1).astype(np.float64)
+    rng = np.random.default_rng(seed + layer_idx)
+    w_mock = rng.standard_normal(d_model).astype(np.float64)
+    b_mock = rng.standard_normal(1).astype(np.float64)
 
     # Simulate directory trees and commit atomic persistence dumps
     weights_dir = output_dir / "smoke_weights"
@@ -102,8 +103,9 @@ def main() -> None:
     global_start = time.perf_counter()
 
     # Execute loop across active hardware segments
+    smoke_seed = get_seed(config["seed"], "io_smoke_test", 0)
     durations = Parallel(n_jobs=n_workers)(
-        delayed(simulate_layer_io_load)(l, out_dir, d_model, n_stimuli)
+        delayed(simulate_layer_io_load)(l, out_dir, d_model, n_stimuli, seed=smoke_seed)
         for l in range(n_layers)
     )
 

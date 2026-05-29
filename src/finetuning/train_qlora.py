@@ -74,7 +74,7 @@ def main() -> None:
     model_profile = get_model_profile(model_name)
 
     # ── T-04: CONFIG-DRIVEN OUTPUT DIRECTORY RESOLUTION ───────────────────────
-    output_dir = Path(config.get("output_dir", "data/processed/checkpoints"))
+    output_dir = Path(config.get("checkpoints_dir", "data/processed/checkpoints"))
     output_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info(f"Initializing QLoRA fine-tuning pipeline for model profile: {model_name}")
@@ -176,7 +176,6 @@ def main() -> None:
     # ── T-08: ACCELERATED PRODUCTION TRAINING ARGUMENTS ───────────────────────
     training_args = TrainingArguments(
         output_dir=str(output_dir),
-        # ── MODIFICA 1: Sostituzione batch size da registro di estrazione a parametro dedicato train_batch_size
         per_device_train_batch_size=int(config.get("train_batch_size", 8)),
         gradient_accumulation_steps=4,
         learning_rate=float(lora_hyperparams["learning_rate"]),
@@ -204,7 +203,6 @@ def main() -> None:
         eval_dataset=tokenized_val
     )
 
-    # ── MODIFICA 2: Correzione del typo linguistico nei log di avvio training loop
     logger.info("Launching fine-tuning loop...")
     trainer.train()
 

@@ -178,7 +178,7 @@ def main() -> None:
 
     # Update trajectory orchestrator
     step = parse_step_from_tag(args.tag)
-    csv_path = Path("results/rq2_probing/dynamic/trajectories.csv")
+    csv_path = Path("results/rq2_probing/dynamic/trajectories_probing.csv")
     append_to_trajectory(step, accuracy, ci_lo, ci_hi, csv_path)
     logger.info(f"Trajectory alignment completed for step {step}")
 

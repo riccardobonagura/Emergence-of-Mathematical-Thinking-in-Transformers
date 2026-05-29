@@ -157,9 +157,16 @@ def validate_extraction(extraction_dir: str) -> list[str]:
         with open(meta_path, "r", encoding="utf-8") as f:
             meta = json.load(f)
 
-        for key in ["n_layers", "d_model", "n_stimuli", "labels", "stimuli_ids"]:
+        for key in ["n_layers", "d_model", "n_stimuli", "labels", "stimuli_ids", "probe_strategy"]:
             if key not in meta:
                 errors.append(f"metadata.json missing mandatory registration key: '{key}'")
+
+        strategy = meta.get("probe_strategy")
+        if strategy and strategy != "gathered_terminal":
+            errors.append(
+                f"probe_strategy is '{strategy}', expected 'gathered_terminal'. "
+                "Re-run extraction with the corrected extract_states.py."
+            )
 
         if "labels" in meta:
             for field in ["sign", "parity"]:

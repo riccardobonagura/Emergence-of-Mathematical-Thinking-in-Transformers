@@ -17,13 +17,13 @@ def setup_logger() -> logging.Logger:
 
 def main() -> None:
     logger = setup_logger()
-    csv_path = Path("results/rq2_probing/dynamic/trajectories.csv")
+    csv_path = Path("results/rq2_probing/dynamic/trajectories_probing.csv")
     out_dir = Path("results/figures/rq3")
     out_file = out_dir / "rq3_dashboard.html"
 
     # 1. Invariant: File Existence Check
     if not csv_path.exists():
-        logger.error("FATAL: trajectories.csv not found.")
+        logger.error("FATAL: trajectories_probing.csv not found.")
         raise FileNotFoundError(
             f"Missing {csv_path}. You must execute run_rq3.py (and optionally eval_gsm8k.py) "
             "to generate the trajectory data before running the visualization."
@@ -119,8 +119,8 @@ def main() -> None:
 
     # --- SUBPLOT 2: Drift Heatmap ---
     # Average geom_delta across properties for the heatmap topology
-    heatmap_df = df.groupby(['layer', 'step'])['geom_delta'].mean().reset_index()
-    heatmap_pivot = heatmap_df.pivot(index='layer', columns='step', values='geom_delta')
+    heatmap_df = df.groupby(['layer', 'step'])['geom_delta_math'].mean().reset_index()
+    heatmap_pivot = heatmap_df.pivot(index='layer', columns='step', values='geom_delta_math')
     
     fig.add_trace(
         plotly_go.Heatmap(
@@ -141,7 +141,7 @@ def main() -> None:
     # --- SUBPLOT 3: Scatter Drift ↔ Δ Accuracy ---
     fig.add_trace(
         plotly_go.Scatter(
-            x=df['geom_delta'],
+            x=df['geom_delta_math'],
             y=df['delta_acc'],
             mode='markers',
             marker=dict(
