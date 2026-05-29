@@ -1,11 +1,4 @@
-"""
-directions.py — Directional analysis, angular distances, selectivity, and confound correlations.
-Enforces precise geometric metrics and explicit raw selectivity gap formulations.
-
-CORRECTED:
-- Fixed type annotations for angle_degrees using typing.Optional and typing.Union to ensure
-  strict compliance with the project layout and execution guidelines.
-"""
+"""directions.py — Directional analysis, angular distances, and confound correlations."""
 
 import numpy as np
 import scipy.stats as stats
@@ -60,22 +53,6 @@ def angle_degrees(arg1: Union[float, np.ndarray], arg2: Optional[np.ndarray] = N
     # Clip to avoid numerical floating-point inaccuracies outside boundaries [-1, 1]
     cos_sim = np.clip(cos_sim, -1.0, 1.0)
     return float(np.degrees(np.arccos(cos_sim)))
-
-
-def compute_selectivity(accuracy_task: float, accuracy_control: float) -> float:
-    """
-    Computes the Hewitt & Liang (2019) selectivity gap metric.
-    Returns the raw difference between task accuracy and linguistic control accuracy.
-    Callers are responsible for interpreting negative selectivity values.
-
-    Args:
-        accuracy_task: Probing accuracy achieved on the targeted mathematical task.
-        accuracy_control: Probing accuracy achieved on the arbitrary language control task.
-
-    Returns:
-        The raw floating-point difference: accuracy_task - accuracy_control.
-    """
-    return float(accuracy_task - accuracy_control)
 
 
 def test_confound_correlation(magnitudes: np.ndarray, predictions: np.ndarray) -> tuple[float, float]:

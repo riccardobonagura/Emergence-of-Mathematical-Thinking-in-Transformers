@@ -82,14 +82,14 @@ Dataset (3000 stimoli)
     ▼
 Estrazione hidden states — Pythia-1.4B
     │  24 layer × 3000 stimoli × 2048 dim → 24 tensori [3000, 2048]
-    │  Strategia: last_token ("="), left-padding, FP16
+    │  Strategia: gathered_terminal ("="), right-padding (TransformerLens to_tokens), FP16
     │
     ├──▶ RQ1: Isotropy differenziale + CKA inter/evolutionary
     │
     ├──▶ RQ2: Linear Probing (sign, parity)
     │         LogisticRegression, lbfgs, C=1.0
     │         Split 80/20 stratificato, seed deterministico
-    │         Validazione: bootstrap CI, permutation test, selectivity, BH correction
+    │         Validazione: bootstrap CI, permutation test, BH correction, confound checks
     │         Confound T02: cosine(w_sign, w_magnitude) + Pearson(operand_a, sign_label)
     │
     └──▶ RQ3: QLoRA fine-tuning su MetaMathQA

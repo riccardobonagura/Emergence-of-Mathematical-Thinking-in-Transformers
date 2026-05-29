@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """
 run_rq2.py — RQ2 orchestrator: static linear probing with strict statistical gating.
-Flow: config → data → parallel engine → permutation stats → FDR correction → selectivity & difficulty gradient.
+Flow: config → data → parallel engine → permutation stats → FDR correction → difficulty gradient.
 
 Expected config["properties"] schema (v5):
   properties:
@@ -27,7 +27,6 @@ from src.probing.io_utils        import (MetadataHandler, setup_logging,
                                          save_test_indices)
 from src.probing.probing_dataset import ProbingDataset
 from src.probing.engine          import ProbingEngine, LayerResult
-from src.probing.directions      import compute_selectivity
 from src.probing.stats           import benjamini_hochberg_correction
 from src.probing.seeds           import get_seed
 
@@ -42,8 +41,7 @@ class RQ2Result(TypedDict):
     raw_p_value: float
     confound_pearson_r: Optional[float]
     confound_p_value: Optional[float]
-    accuracy_control: float
-    selectivity: float
+    ctrl_positive_pred_rate: float
     gap_robustness_delta: float
     is_significant: bool
 
@@ -51,10 +49,10 @@ class RQ2Result(TypedDict):
 def process_task(
     layer_idx: int, prop_name: str, model_dir: Path,
     engine: ProbingEngine, train_idx: np.ndarray, test_idx: np.ndarray,
-    y_train: np.ndarray, y_test: np.ndarray, ctrl_idx: np.ndarray, y_ctrl: np.ndarray,
+    y_train: np.ndarray, y_test: np.ndarray, ctrl_idx: np.ndarray,
     magnitudes_test: np.ndarray, gaps_test: np.ndarray, output_dir: Path
 ) -> RQ2Result:
-    """Atomic worker: load tensor slice → fit probe → evaluate selectivity, confounds & difficulty gradient."""
+    """Atomic worker: load tensor slice → fit probe → evaluate confounds & difficulty gradient."""
     H = load_hidden_states(model_dir / f"layer_{layer_idx:02d}.pt")
 
     result = engine.run_layer(
@@ -67,17 +65,13 @@ def process_task(
     w_orig = result["weights"]
     b_orig = result["bias"]
 
-    # ── P0-1: Hewitt & Liang Selectivity Test ──
-    if w_orig.ndim == 1:
-        y_pred_ctrl = (np.dot(H[ctrl_idx], w_orig) + b_orig > 0).astype(int)
-        y_pred_test = (np.dot(H[test_idx], w_orig) + b_orig > 0).astype(int)
-    else:
-        y_pred_ctrl = np.argmax(np.dot(H[ctrl_idx], w_orig.T) + b_orig, axis=1)
-        y_pred_test = np.argmax(np.dot(H[test_idx], w_orig.T) + b_orig, axis=1)
+    # Sanity: fraction of control inputs predicted positive; ~0.5 means the direction
+    # is not spuriously firing on non-arithmetic text. NOT selectivity (E-M-04).
+    # Probe-validity evidence: run_confound_checks.py / run_parity_confound_checks.py.
+    y_pred_ctrl = (np.dot(H[ctrl_idx], w_orig) + b_orig > 0).astype(int)
+    result["ctrl_positive_pred_rate"] = round(float(np.mean(y_pred_ctrl)), 4)
 
-    acc_ctrl = float(np.mean(y_pred_ctrl == y_ctrl))
-    result["accuracy_control"] = round(acc_ctrl, 4)
-    result["selectivity"] = round(compute_selectivity(result["accuracy"], acc_ctrl), 4)
+    y_pred_test = (np.dot(H[test_idx], w_orig) + b_orig > 0).astype(int)
 
     # ── D-09: Difficulty Gradient (Gap Stratification) ──
     if len(gaps_test) > 0 and np.var(gaps_test) > 0:
@@ -163,14 +157,13 @@ def main() -> None:
         rng = np.random.default_rng(ctrl_seed)
 
         ctrl_idx = rng.choice(ctrl_idx_global, size=min(len(ctrl_idx_global), len(test_idx)), replace=False)
-        y_ctrl = rng.permutation(y_test[:len(ctrl_idx)])
 
         logger.info(f"Parallel probing {prop_name} across {n_layers} layers...")
         tasks = [
             delayed(process_task)(
                 l, prop_name, model_dir, engine,
                 train_idx, test_idx, y_train, y_test,
-                ctrl_idx, y_ctrl, magnitudes_test, gaps_test, out_dir
+                ctrl_idx, magnitudes_test, gaps_test, out_dir
             ) for l in range(n_layers)
         ]
 

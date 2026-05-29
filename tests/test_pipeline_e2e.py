@@ -219,7 +219,7 @@ def test_rq1_pipeline(mock_iso, mock_load, mock_pipeline_env, monkeypatch) -> No
 
 @patch("run_rq2.load_hidden_states")
 def test_rq2_pipeline(mock_load, mock_pipeline_env, monkeypatch) -> None:
-    """Validates the static linear probing engine, selectivity tests, and FDR constraints."""
+    """Validates the static linear probing engine, FDR constraints, and control sanity metric."""
     env = mock_pipeline_env
 
     def side_effect(path):
@@ -238,8 +238,9 @@ def test_rq2_pipeline(mock_load, mock_pipeline_env, monkeypatch) -> None:
 
     df = pd.read_csv(metrics_csv)
     assert "is_significant" in df.columns, "Fix TE-04 Error: Multiple comparison flag column missing."
-    assert "selectivity" in df.columns, "Hewitt & Liang selectivity tracking metric column missing."
+    assert "ctrl_positive_pred_rate" in df.columns, "Control prediction rate sanity column missing."
     assert "gap_robustness_delta" in df.columns, "Difficulty gradient tracking metric column missing."
+    assert df["ctrl_positive_pred_rate"].between(0.0, 1.0).all(), "ctrl_positive_pred_rate out of [0,1] bounds."
 
     assert df["accuracy"].min() >= 0.0 and df["accuracy"].max() <= 1.0, "Accuracy metrics out of bounds."
 
