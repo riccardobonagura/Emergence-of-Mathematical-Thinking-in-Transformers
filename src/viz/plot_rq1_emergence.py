@@ -9,7 +9,8 @@ Outputs: results/figures/rq1_emergence/rq1_emergence.html
 
 Delta isotropy:
     ΔIso(l) = mean_iso(l, {CAT-SIGN, CAT-PARITY}) - mean_iso(l, {CTRL-NEU, CTRL-NUM})
-    Positive ΔIso → arithmetic representations more isotropic than control at layer l.
+    ISO high = anisotropic (vectors collinear); ISO low = isotropic (vectors spread).
+    Negative ΔIso → math more isotropic than control at layer l.
 """
 
 import numpy as np
@@ -32,7 +33,7 @@ def plot_rq1_dashboard() -> None:
 
     if not all(p.exists() for p in (iso_file, cka_math_file, cka_ctrl_file)):
         raise FileNotFoundError(
-            "RQ1 data missing — run src/run_rq1.py first."
+            "RQ1 data missing — run run_rq1.py first."
         )
 
     df_iso   = pd.read_csv(iso_file)
@@ -71,7 +72,7 @@ def plot_rq1_dashboard() -> None:
         vertical_spacing=0.08,
         subplot_titles=(
             "ΔIsotropy: {CAT-SIGN,CAT-PARITY} − {CTRL-NEU,CTRL-NUM} "
-            "(positive → math more isotropic)",
+            "(negative → math more isotropic)",
             "Evolutionary CKA: CKA(l, l−1) "
             "(low value → structural reorganisation at layer l)",
         ),

@@ -140,7 +140,8 @@ if __name__ == "__main__":
 
     proc  = Path(args.proc_dir)
     out   = Path(args.out_dir); out.mkdir(parents=True, exist_ok=True)
-    meta  = json.load(open(proc / "metadata.json"))
+    with open(proc / "metadata.json", encoding="utf-8") as f:
+        meta = json.load(f)
     cats  = meta["categories"]
     label_map = {"CAT-SIGN": 0, "CAT-PARITY": 1, "CTRL-NEU": 2, "CTRL-NUM": 3}
     labels = [label_map[c] for c in cats]

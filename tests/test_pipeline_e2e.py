@@ -297,11 +297,11 @@ def test_rq3_pipeline(mock_load, mock_pipeline_env, monkeypatch) -> None:
 
     df = pd.read_csv(trajectory_csv)
 
-    # HARDENED: Replaced unified geom_delta with decoupled math/ctrl tracking tokens
-    assert "geom_delta_math" in df.columns, "Mathematical manifold Frobenius drift column missing."
-    assert "geom_delta_ctrl" in df.columns, "Linguistic manifold Frobenius drift column missing."
+    for col in ["geom_delta_math", "geom_delta_ctrl", "geom_delta_math_rel", "geom_delta_ctrl_rel"]:
+        assert col in df.columns, f"Drift column '{col}' missing from trajectory CSV."
 
     assert (df["geom_delta_math"] > 0.0).any(), "Geometric drift validation failed on active branches."
+    assert (df["geom_delta_math_rel"] > 0.0).any(), "Relative Frobenius drift must be positive."
 
 
 # ── FIX TE-08: PROBING DENORMALIZATION ALGEBRA VERIFIER ───────────────────────
