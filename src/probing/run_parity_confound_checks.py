@@ -78,6 +78,16 @@ def main() -> None:
 
     out_csv.parent.mkdir(parents=True, exist_ok=True)
 
+    with open(tensors_dir / "metadata.json", encoding="utf-8") as f:
+        _meta = json.load(f)
+    with open(dataset_path, encoding="utf-8") as f:
+        _jsonl_ids = [json.loads(line)["id"] for line in f if line.strip()]
+    if _meta.get("stimuli_ids") != _jsonl_ids:
+        raise ValueError(
+            "Index-space mismatch: metadata.json stimuli_ids order != JSONL line order. "
+            "Tensor rows and operand labels would be misaligned."
+        )
+
     # ── Parse CAT-PARITY stimuli: operand2 value, operand2 parity, result parity, op1 parity ──
     logger.info("Parsing dataset dictionaries for CAT-PARITY tokens...")
     par_global_indices = []
