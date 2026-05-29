@@ -4,6 +4,10 @@ Intercepts residual stream points at the final token position without hoarding m
 
 FIX E-01: Uses model.run_with_hooks with explicit attention_mask forwarding.
 HARDENED: Restores ExtractionMetadata TypedDict (ARCH-03) and restricts operator verification.
+
+Last-token gather: to_tokens right-pads and pad_id == BOS == eos == 0 for Pythia,
+so the terminal token is located by scanning non-pad positions from the right
+rather than reading value[:, -1, :] (which would hit a pad for short sequences).
 """
 
 import json
@@ -38,25 +42,48 @@ class ExtractionMetadata(TypedDict):
     dataset_version: str
 
 
+def _resolve_pad_id(model) -> int:
+    """Pythia's tokenizer has pad_token_id=None; TL aliases pad→eos→0 (== BOS).
+    Fall back to eos_token_id so the value is always defined and never None."""
+    pad_id = model.tokenizer.pad_token_id
+    if pad_id is None:
+        pad_id = model.tokenizer.eos_token_id
+    return pad_id
+
+
+def _last_token_indices(tokens: torch.Tensor, pad_id: int) -> torch.Tensor:
+    """Index of the last non-pad token per row, robust to BOS sharing pad's id.
+
+    Right padding puts pads at the tail, so scanning from the right for the first
+    non-pad lands on the real terminal token ("=" for math rows) regardless of the
+    prepended BOS also being id 0.
+    """
+    non_pad = (tokens != pad_id)
+    return (tokens.shape[1] - 1) - non_pad.int().flip(1).argmax(dim=1)
+
+
 def validate_extraction_tokens(model, stimuli: list[dict]) -> None:
     """
-    Filters for math categories and strictly enforces '=' terminal validation.
-    Removes the speculative ':' character check to prevent false negatives on valid prompts.
+    Filters for math categories and verifies the *gathered* terminal token decodes
+    to '=' under the real batched/padded path used by extract_from_model. Tokenizing
+    a mixed-length batch (not single strings) is what surfaces right-padding /
+    last-token misalignment.
     """
     math_stimuli = [s for s in stimuli if s["category"] in ("CAT-SIGN", "CAT-PARITY")][:10]
     if not math_stimuli:
         logger.warning("No arithmetic categories located for token pre-flight verification.")
         return
 
-    for s in math_stimuli:
-        tokens = model.to_tokens(s["text"], prepend_bos=True)
-        last_token_str = model.tokenizer.decode(tokens[0, -1])
+    pad_id = _resolve_pad_id(model)
+    tokens = model.to_tokens([s["text"] for s in math_stimuli], prepend_bos=True)
+    last_idx = _last_token_indices(tokens, pad_id)
 
-        # Modifica 3: Rimosso il check su ":" — l'unico token terminale valido è "="
+    for row, s in enumerate(math_stimuli):
+        last_token_str = model.tokenizer.decode(tokens[row, last_idx[row]])
         if "=" not in last_token_str:
             raise ValueError(
                 f"Pre-flight token alignment validation failed for sequence: '{s['text']}'. "
-                f"Terminal token decoded as '{last_token_str}' instead of an assignment '=' operator."
+                f"Gathered terminal token decoded as '{last_token_str}' instead of an assignment '=' operator."
             )
 
 
@@ -72,12 +99,22 @@ def extract_from_model(model, stimuli: list[dict], out_dir: Path, batch_size: in
     # Initialize CPU-bound accumulators to offload active GPU memory pressure
     layer_tensors = {l: torch.zeros((n_stimuli, d_model), dtype=torch.float16) for l in range(n_layers)}
 
+    pad_id = _resolve_pad_id(model)
+
     for i in tqdm(range(0, n_stimuli, batch_size), desc="Extracting residual activations"):
         batch = stimuli[i : i + batch_size]
         texts = [s["text"] for s in batch]
 
         tokens = model.to_tokens(texts, prepend_bos=True)
-        attention_mask = (tokens != model.tokenizer.pad_token_id).long()
+        # pad_id collides with BOS (both id 0 for Pythia), so derive the mask from
+        # non-pad positions but keep the real prepended BOS attended (column 0).
+        attention_mask = (tokens != pad_id).long()
+        attention_mask[:, 0] = 1
+
+        # Gather each row's true terminal token instead of a blind value[:, -1, :]:
+        # to_tokens right-pads, so the last position is a pad for shorter sequences.
+        last_idx = _last_token_indices(tokens, pad_id)
+        row_idx = torch.arange(tokens.shape[0])
 
         cache_store = {}
         all_hooks = []
@@ -94,7 +131,8 @@ def extract_from_model(model, stimuli: list[dict], out_dir: Path, batch_size: in
         # must be reported as an RQ1 caveat; it does not affect within-math RQ2 probing.
         def make_hook(layer_idx: int):
             def hook_fn(value, hook):
-                cache_store[layer_idx] = value[:, -1, :].detach().cpu().to(torch.float16)
+                gathered = value[row_idx, last_idx, :]
+                cache_store[layer_idx] = gathered.detach().cpu().to(torch.float16)
                 return value
             return hook_fn
 
@@ -142,3 +180,56 @@ def extract_from_model(model, stimuli: list[dict], out_dir: Path, batch_size: in
 def load_stimuli(path: Path) -> list[dict]:
     with open(path, "r", encoding="utf-8") as f:
         return [json.loads(line) for line in f if line.strip()]
+
+
+def main() -> None:
+    """Base (pre-fine-tuning) extraction runner feeding RQ1/RQ2.
+
+    Loads Pythia with the *same* HookedTransformer config as the RQ3 checkpoint
+    loop (fold_ln=True, fp16) so base-vs-checkpoint CKA/Frobenius drift stays
+    comparable.
+    """
+    import argparse
+
+    import transformers
+    import yaml
+    from transformer_lens import HookedTransformer
+
+    from src.config.models import get_model_profile
+
+    # ENV-02: GPT-NeoX vmap/SDPA bug in transformers >= 4.49
+    assert transformers.__version__ < "4.49", (
+        f"transformers {transformers.__version__} has a vmap/SDPA bug with GPT-NeoX. "
+        "Pin to <4.49: pip install 'transformers>=4.46,<4.49'"
+    )
+
+    parser = argparse.ArgumentParser(description="Base hidden-state extraction (RQ1/RQ2)")
+    parser.add_argument("--config", required=True, type=str, help="Path to the master configuration YAML file.")
+    args = parser.parse_args()
+
+    with open(args.config, "r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+
+    model_name = cfg.get("model_name", "pythia-1.4b")
+    profile = get_model_profile(model_name)
+
+    stimuli_path = Path("data/processed/dataset_master_v5.jsonl")
+    if not stimuli_path.exists():
+        raise FileNotFoundError(f"Dataset missing: {stimuli_path}")
+    stimuli = load_stimuli(stimuli_path)
+
+    logger.info(f"Loading {profile['hf_path']} into HookedTransformer (fp16, fold_ln=True)...")
+    model = HookedTransformer.from_pretrained(
+        profile["hf_path"],
+        device="cuda",
+        dtype=torch.float16,
+        fold_ln=True,
+    )
+
+    out_dir = Path("data/processed") / model_name
+    extract_from_model(model, stimuli, out_dir, batch_size=profile["extract_batch_size"])
+    logger.info(f"Base extraction complete for {model_name}.")
+
+
+if __name__ == "__main__":
+    main()

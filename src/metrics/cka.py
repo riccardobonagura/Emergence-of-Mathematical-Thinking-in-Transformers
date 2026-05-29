@@ -288,6 +288,8 @@ def compute_cka_matrix_intramodel(
     first_layer_path = hidden_states_dir / "layer_00.pt"
     H_first = torch.load(first_layer_path, map_location=device).cpu().numpy()  # (N, d)
     N = H_first.shape[0]
+    # fp16 Gram matrices (X @ X.T over d=2048) lose precision / risk overflow;
+    # match the inter-category and cross-temporal loaders by working in float64.
 
     # ── Selezione fissa degli indici di subsample ───────────────────────────
     # IMPORTANTE: gli stessi indici per tutti i layer → confronto consistente
@@ -302,7 +304,7 @@ def compute_cka_matrix_intramodel(
     H_sub_all = []  # lista di array (n_sub, d), uno per layer
     for l in range(n_layers):
         layer_path = hidden_states_dir / f"layer_{l:02d}.pt"
-        H_l = torch.load(layer_path, map_location=device).cpu().numpy()  # (N, d)
+        H_l = torch.load(layer_path, map_location=device).cpu().numpy().astype(np.float64)  # (N, d)
         H_sub_all.append(H_l[sub_idx])  # (n_sub, d) — subsample fisso
 
     # ── Calcolo della matrice CKA L×L ───────────────────────────────────────
@@ -331,6 +333,7 @@ def compute_cka_matrix_intramodel(
 def compute_cka_intercategory(
     H_math: np.ndarray,
     H_generic: np.ndarray,
+    seed: int | None = None,
 ) -> float:
     """
     Calcola CKA tra le rappresentazioni di stimoli matematici e testo generico
@@ -340,17 +343,15 @@ def compute_cka_intercategory(
     il modello le rappresenta come strutturalmente diverse in quel layer.
     Iterare su tutti i layer produce la curva CKA_inter(l) che identifica l*.
 
-    Per il confronto layer successivo (RQ1, approccio alternativo descritto
-    in CKA.md, sezione 2A), si chiama:
-        cka_l = compute_cka_intercategory(H_math_l, H_math_l_minus_1)
-    confrontandolo con:
-        cka_l = compute_cka_intercategory(H_generic_l, H_generic_l_minus_1)
-
     Args:
         H_math    (np.ndarray): Hidden state stimoli matematici, forma (n1, d).
         H_generic (np.ndarray): Hidden state testo generico,     forma (n2, d).
                                 n1 e n2 possono essere diversi (CKA lo gestisce
                                 tramite la Gram matrix n×n separata per i due set).
+        seed      (int|None):   Seed per il subsampling bilanciato quando n1 ≠ n2.
+                                None → fallback a 42 (retro-compatibile). Il chiamante
+                                deve passare get_seed(...) per integrarsi nel seed
+                                discipline del progetto.
 
     Returns:
         float: Valore CKA inter-categoria in [0, 1].
@@ -363,9 +364,10 @@ def compute_cka_intercategory(
     n1, n2 = H_math.shape[0], H_generic.shape[0]
 
     if n1 != n2:
-        # Subsampling bilanciato per garantire n uguale
         n_common = min(n1, n2)
-        rng = np.random.default_rng(42)
+        # Seed esterno per integrare il seed discipline del progetto (get_seed).
+        # Fallback a 42 mantiene il comportamento storico se il chiamante non passa nulla.
+        rng = np.random.default_rng(seed if seed is not None else 42)
         idx_math    = rng.choice(n1, size=n_common, replace=False)
         idx_generic = rng.choice(n2, size=n_common, replace=False)
         H_math    = H_math[idx_math]
