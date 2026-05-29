@@ -108,6 +108,7 @@ def mock_pipeline_env(tmp_path_factory) -> dict:
         "n_stimuli": len(stimuli_ids),
         "stimuli_ids": stimuli_ids,
         "categories": categories,
+        "probe_strategy": "gathered_terminal",
         "labels": {
             "sign": sign_labels,
             "parity": parity_labels,

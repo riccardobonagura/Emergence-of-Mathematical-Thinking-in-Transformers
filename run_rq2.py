@@ -10,6 +10,7 @@ Expected config["properties"] schema (v5):
 """
 
 import argparse
+import hashlib
 import json
 import logging
 import numpy as np
@@ -17,17 +18,34 @@ import pandas as pd
 import yaml
 from joblib import Parallel, delayed
 from pathlib import Path
+from typing import Optional, TypedDict
 
 from src.config.categories       import CTRL_CATS
 from src.probing.io_utils        import (MetadataHandler, setup_logging,
                                          load_hidden_states, save_weights,
-                                         _atomic_write_csv,
-                                         load_test_indices, save_test_indices)
+                                         _atomic_write_csv, _atomic_write_json,
+                                         save_test_indices)
 from src.probing.probing_dataset import ProbingDataset
-from src.probing.engine          import ProbingEngine
+from src.probing.engine          import ProbingEngine, LayerResult
 from src.probing.directions      import compute_selectivity
 from src.probing.stats           import benjamini_hochberg_correction
 from src.probing.seeds           import get_seed
+
+
+class RQ2Result(TypedDict):
+    """Extends LayerResult with orchestrator-added fields (ARCH-03)."""
+    layer: int
+    property: str
+    accuracy: float
+    accuracy_lower_ci: float
+    accuracy_upper_ci: float
+    raw_p_value: float
+    confound_pearson_r: Optional[float]
+    confound_p_value: Optional[float]
+    accuracy_control: float
+    selectivity: float
+    gap_robustness_delta: float
+    is_significant: bool
 
 
 def process_task(
@@ -35,7 +53,7 @@ def process_task(
     engine: ProbingEngine, train_idx: np.ndarray, test_idx: np.ndarray,
     y_train: np.ndarray, y_test: np.ndarray, ctrl_idx: np.ndarray, y_ctrl: np.ndarray,
     magnitudes_test: np.ndarray, gaps_test: np.ndarray, output_dir: Path
-) -> dict:
+) -> RQ2Result:
     """Atomic worker: load tensor slice → fit probe → evaluate selectivity, confounds & difficulty gradient."""
     H = load_hidden_states(model_dir / f"layer_{layer_idx:02d}.pt")
 
@@ -98,6 +116,14 @@ def main() -> None:
 
     model_dir = Path("data/processed") / config["model_name"]
     meta = MetadataHandler(model_dir / "metadata.json")
+
+    strategy = meta.data.get("probe_strategy", "unknown")
+    if strategy != "gathered_terminal":
+        raise ValueError(
+            f"Extraction strategy mismatch: expected 'gathered_terminal', got '{strategy}'. "
+            "Re-run extraction with the corrected extract_states.py."
+        )
+
     n_layers = meta.get_n_layers()
 
     dataset = ProbingDataset(
@@ -170,6 +196,11 @@ def main() -> None:
         acc_df.to_dict("records"),
         acc_df.columns.tolist()
     )
+
+    config_hash = hashlib.md5(json.dumps(config, sort_keys=True).encode()).hexdigest()
+    _atomic_write_json(out_dir / "weights" / "rq2_config_hash.json", {
+        "config_hash": config_hash, "config_snapshot": config
+    })
 
     logger.info("RQ2 Strict Evaluation Complete.")
 

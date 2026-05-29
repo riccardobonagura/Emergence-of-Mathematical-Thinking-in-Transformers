@@ -48,6 +48,10 @@ class ProbingDataset:
             else:
                 raise ValueError(f"Pre-flight alignment defect: Metadata ID '{sid}' missing from JSONL file.")
 
+        self._pair_ids = [
+            r.get("contrast", {}).get("pair_id") for r in aligned_records
+        ]
+
         return aligned_records
 
     def _extract(self, prop_name: str, prop_cfg: PropConfig) -> Tuple[List[int], List[int]]:
@@ -120,7 +124,36 @@ class ProbingDataset:
         balanced_indices = np.array(balanced_indices, dtype=np.int64)
         balanced_labels = np.array(balanced_labels, dtype=np.int64)
 
-        # Delegates stratified partition directly to scikit-learn
+        pair_ids_arr = np.array([self._pair_ids[i] for i in balanced_indices])
+        has_pairs = any(pid is not None for pid in pair_ids_arr)
+
+        if has_pairs:
+            unique_pairs = np.array(list({pid for pid in pair_ids_arr if pid is not None}))
+            split_rng = np.random.default_rng(seed_val)
+            split_rng.shuffle(unique_pairs)
+            n_train_pairs = int(len(unique_pairs) * train_split)
+            train_pairs = set(unique_pairs[:n_train_pairs])
+
+            train_mask = np.array([pid in train_pairs for pid in pair_ids_arr])
+            orphan_mask = np.array([pid is None for pid in pair_ids_arr])
+            orphan_train, orphan_test = np.where(orphan_mask)[0], np.array([], dtype=int)
+            if orphan_mask.any():
+                orphan_idx = np.where(orphan_mask)[0]
+                n_orphan_train = int(len(orphan_idx) * train_split)
+                split_rng.shuffle(orphan_idx)
+                orphan_train = orphan_idx[:n_orphan_train]
+                orphan_test = orphan_idx[n_orphan_train:]
+
+            paired_train = np.where(train_mask & ~orphan_mask)[0]
+            paired_test = np.where(~train_mask & ~orphan_mask)[0]
+            train_pos = np.concatenate([paired_train, orphan_train])
+            test_pos = np.concatenate([paired_test, orphan_test])
+
+            return (
+                balanced_indices[train_pos], balanced_indices[test_pos],
+                balanced_labels[train_pos], balanced_labels[test_pos],
+            )
+
         return train_test_split(
             balanced_indices,
             balanced_labels,

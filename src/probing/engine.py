@@ -29,7 +29,12 @@ class LayerResult(TypedDict):
 class ProbingEngine:
     """Fits one probe per (layer, property) and enforces statistical rigor."""
 
+    _REQUIRED_KEYS = {"max_iter", "C", "solver", "multiclass_strategy", "seed", "bootstrap_n_samples"}
+
     def __init__(self, config: Dict[str, Any]) -> None:
+        missing = self._REQUIRED_KEYS - set(config.keys())
+        if missing:
+            raise ValueError(f"ProbingEngine config missing required fields: {missing}")
         self.cfg = config
 
     def run_layer(
