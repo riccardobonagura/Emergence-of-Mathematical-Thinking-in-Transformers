@@ -1,181 +1,187 @@
+#!/usr/bin/env python
 """
 eval_gsm8k.py — Dynamic Evaluation Layer (RQ3).
-Executes 0-shot evaluation on GSM8K using EleutherAI's lm-evaluation-harness.
-Strictly decoupled from model merging: requires base HF models or already merged weights.
+Executes strictly controlled 0-shot evaluation on GSM8K.
+Enforces Binomial Confidence Intervals and NaN-safe trajectory updates.
 """
 
 import argparse
 import json
 import logging
+import math
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Any, Dict, Tuple
 
 import pandas as pd
+import yaml
 import lm_eval
+from lm_eval.utils import make_table
 
-def setup_logger() -> logging.Logger:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-    return logging.getLogger("eval_gsm8k")
+from src.probing.io_utils import (_atomic_write_csv, _atomic_write_json,
+                                   setup_logging)
+from src.probing.seeds import get_seed
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logger = logging.getLogger("eval_gsm8k")
+
+
+def calculate_binomial_ci(accuracy: float, n_samples: int, z_score: float = 1.96) -> Tuple[float, float]:
+    """
+    Calculates the Wald confidence interval for a binomial proportion.
+    Essential to prove that accuracy=0.0 is statistically bounded.
+    """
+    if n_samples == 0:
+        return 0.0, 0.0
+    margin = z_score * math.sqrt((accuracy * (1.0 - accuracy)) / n_samples)
+    return max(0.0, round(accuracy - margin, 4)), min(1.0, round(accuracy + margin, 4))
+
+
+def parse_step_from_tag(tag: str) -> int:
+    """Extracts step number from tags like 'ckpt_500'. Returns 0 for 'baseline'."""
+    if tag.lower() in ("baseline", "base"):
+        return 0
+    try:
+        return int(''.join(filter(str.isdigit, tag)))
+    except ValueError:
+        raise ValueError(f"Cannot parse training step from tag '{tag}'")
+
+
+def append_to_trajectory(step: int, acc: float, ci_lower: float, ci_upper: float, csv_path: Path) -> None:
+    """
+    Safely merges the external GSM8K benchmark with the internal geometric drift.
+    Prevents NaN injection on unaligned rows.
+    """
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if not csv_path.exists():
+        # If trajectories doesn't exist yet, we can't append external metrics safely.
+        # Wait for run_rq3.py to initialize it with geometric data.
+        logging.warning(f"Trajectory file {csv_path} not found. GSM8K metrics will be saved in JSON only.")
+        return
+
+    df = pd.read_csv(csv_path)
+
+    # Ensure columns exist to prevent KeyError
+    for col in ["gsm8k_acc", "gsm8k_ci_lower", "gsm8k_ci_upper"]:
+        if col not in df.columns:
+            df[col] = pd.NA
+
+    # Update only the rows matching the current step
+    mask = df["step"] == step
+    if not mask.any():
+        logging.warning(f"Step {step} not found in {csv_path}. Run run_rq3.py for this step first.")
+        return
+
+    df.loc[mask, "gsm8k_acc"] = acc
+    df.loc[mask, "gsm8k_ci_lower"] = ci_lower
+    df.loc[mask, "gsm8k_ci_upper"] = ci_upper
+
+    _atomic_write_csv(csv_path, df.to_dict("records"), df.columns.tolist())
+
 
 def check_adapter_consistency(model_path: str, strategy: str) -> None:
     path = Path(model_path)
     if path.is_dir():
         has_adapter = (path / "adapter_config.json").exists()
         has_config = (path / "config.json").exists()
-        
-        if strategy == "peft":
-            if not has_adapter:
-                raise ValueError(
-                    f"FATAL: '--loading_strategy peft' expects an unmerged LoRA adapter, "
-                    f"but {model_path} lacks adapter_config.json."
-                )
-        elif strategy in ["merged_cpu", "merged_direct"]:
-            if has_adapter and not has_config:
-                raise ValueError(
-                    f"FATAL: '--loading_strategy {strategy}' expects a merged model, "
-                    f"but {model_path} points to an unmerged adapter."
-                )
 
-def _atomic_write_csv(df: pd.DataFrame, path: Path) -> None:
-    temp_path = path.with_suffix(".tmp")
-    df.to_csv(temp_path, index=False)
-    temp_path.replace(path)
+        if strategy == "peft" and not has_adapter:
+            raise ValueError(
+                f"FATAL: '--loading_strategy peft' expects an unmerged LoRA adapter, "
+                f"but {model_path} lacks adapter_config.json."
+            )
+        elif strategy in ["merged_cpu", "merged_direct"] and has_adapter and not has_config:
+            raise ValueError(
+                f"FATAL: '--loading_strategy {strategy}' expects a merged model, "
+                f"but {model_path} points to an unmerged adapter."
+            )
 
-def append_to_trajectory(step: int, gsm8k_acc: float, csv_path: Path) -> None:
-    csv_path.parent.mkdir(parents=True, exist_ok=True)
-    
-    if csv_path.exists():
-        df = pd.read_csv(csv_path)
-        
-        if "step" not in df.columns:
-            raise KeyError(f"Corrupted trajectory CSV: missing 'step' column in {csv_path}")
-            
-        if "gsm8k_acc" not in df.columns:
-            df["gsm8k_acc"] = pd.NA
-            
-        if step in df["step"].values:
-            df.loc[df["step"] == step, "gsm8k_acc"] = gsm8k_acc
-        else:
-            new_row = {col: pd.NA for col in df.columns}
-            new_row["step"] = step
-            new_row["gsm8k_acc"] = gsm8k_acc
-            df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
-    else:
-        df = pd.DataFrame([{"step": step, "gsm8k_acc": gsm8k_acc}])
-        
-    _atomic_write_csv(df, csv_path)
-
-def parse_step_from_tag(tag: str) -> int:
-    if tag.lower() in ("baseline", "step0"):
-        return 0
-    if tag.lower() == "final":
-        return 12343  # last training step
-    if tag.lower().startswith("step"):
-        return int(tag[4:])
-    try:
-        return int(tag)
-    except ValueError:
-        raise ValueError(f"Cannot parse integer step from tag '{tag}'.")
-        
-def evaluate_model(model_path: str, tag: str, strategy: str, logger: logging.Logger) -> None:
-    check_adapter_consistency(model_path, strategy)
-    
-    logger.info(f"Initiating GSM8K evaluation for model: {model_path} (Tag: {tag}, Strategy: {strategy})")
-    
-    if strategy == "peft":
-        model_args = f"pretrained=EleutherAI/pythia-1.4b,peft={model_path},dtype=float16"
-        results = lm_eval.simple_evaluate(
-            model="hf",
-            model_args=model_args,
-            tasks=["gsm8k"],
-            num_fewshot=0,
-            batch_size=4,
-        )
-    elif strategy == "merged_direct":
-        model_args = f"pretrained={model_path},dtype=float16"
-        results = lm_eval.simple_evaluate(
-            model="hf",
-            model_args=model_args,
-            tasks=["gsm8k"],
-            num_fewshot=0,
-            batch_size=4,
-        )
-    elif strategy == "merged_cpu":
-        # Lazy HF imports for bypass
-        import torch
-        from transformers import AutoModelForCausalLM, AutoTokenizer
-        from lm_eval.models.huggingface import HFLM
-        
-        logger.info("Bypassing accelerate meta device: loading directly to CPU, then moving to CUDA...")
-        model_obj = AutoModelForCausalLM.from_pretrained(model_path, torch_dtype=torch.float16)
-        tokenizer_obj = AutoTokenizer.from_pretrained(model_path)
-        model_obj = model_obj.cuda()
-        
-        hf_model = HFLM(pretrained=model_obj, tokenizer=tokenizer_obj, batch_size=4)
-        results = lm_eval.simple_evaluate(
-            model=hf_model,
-            tasks=["gsm8k"],
-            num_fewshot=0,
-            batch_size=4,
-        )
-    else:
-        raise ValueError(f"Unknown loading strategy: {strategy}")
-    
-    task_results = results["results"]["gsm8k"]
-    if "acc,none" in task_results:
-        accuracy = task_results["acc,none"]
-    elif "exact_match,strict" in task_results:
-        accuracy = task_results["exact_match,strict"]
-    else:
-        accuracy = next(v for v in task_results.values() if isinstance(v, float))
-    
-    n_samples = 1319 
-    
-    payload = {
-        "accuracy": accuracy,
-        "n_samples": n_samples,
-        "timestamp": datetime.now().isoformat(),
-        "tag": tag,
-        "loading_strategy": strategy
-    }
-    
-    json_out_dir = Path("results/gsm8k")
-    json_out_dir.mkdir(parents=True, exist_ok=True)
-    json_path = json_out_dir / f"gsm8k_{tag}.json"
-    
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=4)
-        
-    logger.info(f"JSON result saved to {json_path}")
-    logger.info(f"Accuracy [{tag}]: {accuracy:.4f}")
-    
-    step = parse_step_from_tag(tag)
-    csv_path = Path("results/rq2_probing/dynamic/trajectories.csv")
-    
-    append_to_trajectory(step, accuracy, csv_path)
-    logger.info(f"Trajectory updated in {csv_path}")
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Evaluate model on GSM8K and log to trajectory.")
+    parser = argparse.ArgumentParser(description="Strict GSM8K Evaluation")
     parser.add_argument("--model_path", type=str, required=True, help="HF Hub ID, local merged path, or adapter path.")
-    parser.add_argument("--tag", type=str, required=True, help="Evaluation tag (e.g., 'baseline', 'step500').")
-    parser.add_argument(
-        "--loading_strategy", 
-        type=str, 
-        default="peft", 
-        choices=["peft", "merged_cpu", "merged_direct"],
-        help="Strategy to load the model (fixes WSL2 mmap deadlocks)."
-    )
-    
+    parser.add_argument("--tag", type=str, required=True, help="Evaluation tag (e.g., 'baseline', 'ckpt_500').")
+    parser.add_argument("--config", type=str, required=True, help="Path to config.yaml to extract global seed architecture.")
+    parser.add_argument("--loading_strategy", type=str, default="peft", choices=["peft", "merged_cpu", "merged_direct"])
     args = parser.parse_args()
-    logger = setup_logger()
-    
+
+    # Enforce strict configuration seed fetching over manual default fallbacks
+    with open(args.config, "r", encoding="utf-8") as f:
+        config = yaml.safe_load(f)
+
+    # Derive a dedicated, isolated evaluation seed hash for lm_eval
+    eval_seed = get_seed(config["seed"], "gsm8k_evaluation", 0)
+
+    json_out_dir = Path("results/gsm8k")
+    logger = setup_logging(json_out_dir)
+
     try:
-        evaluate_model(args.model_path, args.tag, args.loading_strategy, logger)
-    except Exception as e:
-        logger.error(f"GSM8K Evaluation failed: {e}")
+        check_adapter_consistency(args.model_path, args.loading_strategy)
+    except ValueError as e:
+        logger.error(str(e))
         sys.exit(1)
+
+    logger.info(f"Starting rigorous 0-shot evaluation on GSM8K for {args.tag}")
+
+    # Base model string formulation for lm_eval
+    if args.loading_strategy == "peft":
+        model_args = f"pretrained=EleutherAI/pythia-1.4b,peft={args.model_path}"
+    else:
+        model_args = f"pretrained={args.model_path}"
+
+    # Simple_evaluate executing 0-shot regime with explicit seed encapsulation
+    results = lm_eval.simple_evaluate(
+        model="hf",
+        model_args=model_args,
+        tasks=["gsm8k"],
+        num_fewshot=0,             # Documented 0-shot boundary
+        batch_size="auto",
+        device="cuda",
+        limit=None,                # Full evaluation
+        random_seed=eval_seed,
+        numpy_random_seed=eval_seed,
+        torch_random_seed=eval_seed,
+    )
+
+    if results is None or "results" not in results:
+        logger.error("lm_eval returned empty results. Check CUDA OOM or network issues.")
+        sys.exit(1)
+
+    # Parse results
+    gsm8k_res = results["results"].get("gsm8k", {})
+    accuracy = float(gsm8k_res.get("exact_match,strict-match", 0.0))
+
+    # Binomial Confidence Interval (assuming standard 1319 test samples for GSM8K)
+    n_samples = 1319
+    ci_lo, ci_hi = calculate_binomial_ci(accuracy, n_samples)
+
+    payload = {
+        "tag": args.tag,
+        "model_path": args.model_path,
+        "strategy": args.loading_strategy,
+        "regime": "0-shot",
+        "seed": eval_seed,
+        "accuracy": accuracy,
+        "ci_lower": ci_lo,
+        "ci_upper": ci_hi,
+        "n_samples": n_samples,
+        "timestamp": datetime.now().isoformat()
+    }
+
+    json_path = json_out_dir / f"gsm8k_{args.tag}.json"
+    _atomic_write_json(json_path, payload)
+
+    logger.info(f"\n{make_table(results)}")
+    logger.info(f"Accuracy [{args.tag}]: {accuracy:.4f} (95% CI: {ci_lo:.4f} - {ci_hi:.4f})")
+
+    # Update trajectory orchestrator
+    step = parse_step_from_tag(args.tag)
+    csv_path = Path("results/rq2_probing/dynamic/trajectories.csv")
+    append_to_trajectory(step, accuracy, ci_lo, ci_hi, csv_path)
+    logger.info(f"Trajectory alignment completed for step {step}")
+
 
 if __name__ == "__main__":
     main()

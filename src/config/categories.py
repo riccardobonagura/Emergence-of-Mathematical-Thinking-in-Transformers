@@ -1,12 +1,13 @@
-# categories.py — single source of truth for dataset category names.
-# Import from here in every file that masks stimuli by category.
-
+"""
+categories.py — Single Source of Truth for dataset category names.
+Immutable definitions to prevent string-matching errors across the pipeline.
+"""
 from typing import Tuple
 
 # Arithmetic stimuli (contrastive pairs with meaningful sign/parity labels)
 MATH_CATS: Tuple[str, ...] = ("CAT-SIGN", "CAT-PARITY")
 
-# Linguistic control stimuli (labels are sentinels: sign=−1, parity=−1)
+# Linguistic control stimuli (labels are sentinels: sign=-1, parity=-1)
 CTRL_CATS: Tuple[str, ...] = ("CTRL-NEU", "CTRL-NUM")
 
 # All categories in the v5 dataset

@@ -49,3 +49,18 @@ logs/
 # Build artifacts
 *.egg-info/
 build/
+
+
+# --- Claude Code ---
+.claude/
+
+# --- File di lavoro e direttive locali ---
+Revised_scripts.md
+CLAUDE.local.md
+
+# --- Obsidian (se hai un vault nella repo) ---
+.obsidian/
+
+# --- Cursor ---
+.cursorignore
+.cursorindexingignore

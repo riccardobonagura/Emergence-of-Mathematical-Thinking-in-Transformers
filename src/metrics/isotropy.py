@@ -63,24 +63,35 @@ def make_rng(seed: int) -> np.random.Generator:
 # ---------------------------------------------------------------------------
 # Exact estimator (Full Gram matrix)
 # ---------------------------------------------------------------------------
-def isotropy_exact(H_cat: torch.Tensor) -> tuple[float, float]:
+def isotropy_exact(
+    H_cat: torch.Tensor,
+    n_bootstrap: int = 0,
+    rng: Optional[np.random.Generator] = None,
+) -> tuple[float, float, float, float]:
     """
     Calculates the exact mean and std of cosine similarities across all pairs
     (i, j) where i ≠ j using the normalized Gram matrix.
 
-    This is the mean of the discrete uniform distribution over all
-    N*(N-1) ordered pairs — zero sampling variance.
+    The point estimate has zero sampling variance over pairings, but for small
+    N the *stimuli themselves* are a random draw — n_bootstrap > 0 quantifies
+    that stimulus-level uncertainty (E-M-02: CI required to interpret ΔIso).
 
     Args:
-        H_cat: Tensor (N_cat, d) of hidden states for a given category.
+        H_cat:       Tensor (N_cat, d) of hidden states for a given category.
+        n_bootstrap: Number of stimulus-level bootstrap resamples for the 95% CI.
+                     0 → no bootstrap, CI returned as NaN (backward-compatible).
+        rng:         Required when n_bootstrap > 0. NumPy generator with externally
+                     fixed seed (project-wide seed discipline).
 
     Returns:
-        (iso_mean, iso_spread): mean and std of the N*(N-1) cosine similarities.
+        (iso_mean, iso_spread, ci_low, ci_high). CIs are NaN when n_bootstrap == 0.
     """
+    if n_bootstrap > 0 and rng is None:
+        raise ValueError("rng is required when n_bootstrap > 0.")
+
     N = H_cat.shape[0]
     assert N >= 2, "At least 2 stimuli are required to compute cosine similarity."
 
-    # Check for zero-norm vectors
     norms = H_cat.norm(dim=1)
     zero_mask = norms < 1e-8
     if zero_mask.any():
@@ -92,21 +103,36 @@ def isotropy_exact(H_cat: torch.Tensor) -> tuple[float, float]:
         H_cat = H_cat[~zero_mask]
         N = H_cat.shape[0]
         if N < 2:
-            return float("nan"), float("nan")
+            return float("nan"), float("nan"), float("nan"), float("nan")
 
-    # L2 Normalization
     H_norm = F.normalize(H_cat, p=2, dim=1)  # (N, d)
+    C = H_norm @ H_norm.T                    # (N, N)
 
-    # Gram matrix: C[i,j] = cos(h_i, h_j)
-    C = H_norm @ H_norm.T  # (N, N)
-
-    # Extract off-diagonal elements only
     mask = ~torch.eye(N, dtype=torch.bool, device=C.device)
-    off_diag = C[mask]  # N*(N-1) values
+    off_diag = C[mask]
 
     iso_mean = float(off_diag.mean().item())
     iso_spread = float(off_diag.std().item())
-    return iso_mean, iso_spread
+
+    ci_low = float("nan")
+    ci_high = float("nan")
+    if n_bootstrap > 0:
+        # Resample stimuli (rows of H_norm), not pairings: the uncertainty we
+        # care about is "another draw of N stimuli from the same distribution",
+        # not "another draw of pairings from the same N stimuli".
+        C_np = C.detach().cpu().numpy()
+        boot_means = np.empty(n_bootstrap, dtype=np.float64)
+        for b in range(n_bootstrap):
+            idx = rng.integers(0, N, size=N)
+            sub = C_np[np.ix_(idx, idx)]
+            # Off-diagonal mean: subtract diag contribution (always 1.0) and divide
+            # by N*(N-1). Sum-based form avoids materialising a boolean mask each iter.
+            total = sub.sum() - np.trace(sub)
+            boot_means[b] = total / (N * (N - 1))
+        ci_low = float(np.percentile(boot_means, 2.5))
+        ci_high = float(np.percentile(boot_means, 97.5))
+
+    return iso_mean, iso_spread, ci_low, ci_high
 
 
 # ---------------------------------------------------------------------------
@@ -237,6 +263,7 @@ def run_isotropy_analysis(
                                    # which triggered MC for CAT-* and exact for CTRL-*)
     k_pairs: int       = 8000,     # Monte Carlo pairs (only if N_cat > threshold)
     n_bootstrap: int   = 2000,     # Bootstrap resamplings (Monte Carlo regime)
+    n_bootstrap_exact: int = 1000, # Stimulus-level bootstrap when N_cat ≤ exact_threshold
     seed: int          = 42,
     layer_loader: Optional[Callable[[Path],  np.ndarray]] = None
 ) -> pd.DataFrame:
@@ -329,7 +356,9 @@ def run_isotropy_analysis(
             N_cat = len(indices)
 
             if N_cat <= exact_threshold:
-                iso_mean, iso_spread = isotropy_exact(H_cat)
+                iso_mean, iso_spread, ci_low, ci_high = isotropy_exact(
+                    H_cat, n_bootstrap=n_bootstrap_exact, rng=rng
+                )
                 results.append(IsotropyResult(
                     layer=l,
                     category=cat,
@@ -337,8 +366,8 @@ def run_isotropy_analysis(
                     estimator="exact",
                     iso_mean=iso_mean,
                     iso_spread=iso_spread,
-                    ci_low=float("nan"),
-                    ci_high=float("nan"),
+                    ci_low=ci_low,
+                    ci_high=ci_high,
                 ))
             else:
                 iso_mean, iso_spread, ci_low, ci_high = isotropy_monte_carlo(
@@ -437,13 +466,20 @@ def estimate_isotropy(
     estimator = "exact" if (method == "exact" or (method == "auto" and n <= exact_threshold)) else "sampled"
 
     if estimator == "exact":
-        iso_mean, iso_spread = isotropy_exact(embeddings)
+        # n_bootstrap > 0 here triggers stimulus-level bootstrap CI; default 0 keeps
+        # the legacy NaN behaviour for callers that opt out of uncertainty quantification.
+        if n_bootstrap > 0:
+            iso_mean, iso_spread, ci_low, ci_high = isotropy_exact(
+                embeddings, n_bootstrap=n_bootstrap, rng=make_rng(seed)
+            )
+        else:
+            iso_mean, iso_spread, ci_low, ci_high = isotropy_exact(embeddings)
         return {
             "estimator": "exact",
             "iso_mean": float(iso_mean),
             "iso_spread": float(iso_spread),
-            "ci_low": float("nan"),
-            "ci_high": float("nan"),
+            "ci_low": float(ci_low),
+            "ci_high": float(ci_high),
             "n_samples": n,
         }
 

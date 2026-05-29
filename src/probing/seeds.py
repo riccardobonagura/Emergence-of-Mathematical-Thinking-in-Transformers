@@ -1,24 +1,25 @@
-# seeds.py — deterministic seed derivation for every stochastic operation.
-# All seeds are derived from a single global base; never call random.seed() elsewhere.
+"""
+seeds.py — Deterministic seed derivation. Single Source of Truth for all RNG.
+Never use np.random.seed(42), torch.manual_seed, or default_rng(42) directly (E-O-04).
+Always call get_seed() from this module.
+"""
+import hashlib
 
-SEED_OFFSETS: dict[str, int] = {
-    "undersampling":          1_000,
-    "train_test_split":       2_000,
-    "bootstrap":              3_000,
-    "permutation":           10_000,
-    "global_drift_sampling": 50_000,
-}
-
-
-def get_seed(base_seed: int, operation: str, index: int = 0) -> int:
-    """Return base_seed + offset[operation] + index.
+def get_seed(base_seed: int, purpose: str, offset: int = 0) -> int:
+    """
+    Derives a deterministic, collision-resistant seed for a specific use case.
 
     Args:
-        base_seed: global seed from config.
-        operation: key in SEED_OFFSETS.
-        index:     per-call modifier (e.g. layer_idx, permutation_i).
+        base_seed: global seed from config["seed"]
+        purpose:   string identifying the RNG use case (e.g. "bootstrap", "undersampling")
+        offset:    integer differentiator (e.g. layer_idx, split_idx)
+
+    Returns:
+        int seed in [0, 2**31)
+
+    Example:
+        get_seed(42, "bootstrap", 5)  -> reproducible seed for bootstrap at layer 5
     """
-    if operation not in SEED_OFFSETS:
-        raise ValueError(f"Unknown operation {operation!r}. "
-                         f"Valid keys: {list(SEED_OFFSETS)}")
-    return base_seed + SEED_OFFSETS[operation] + index
+    key = f"{purpose}_{offset}".encode("utf-8")
+    h = int(hashlib.md5(key).hexdigest(), 16) % (2**31)
+    return (base_seed + h) % (2**31)
