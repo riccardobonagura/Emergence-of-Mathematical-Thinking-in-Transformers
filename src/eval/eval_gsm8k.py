@@ -38,14 +38,27 @@ def calculate_binomial_ci(accuracy: float, n_samples: int, z_score: float = 1.96
     return max(0.0, round(accuracy - margin, 4)), min(1.0, round(accuracy + margin, 4))
 
 
-def parse_step_from_tag(tag: str) -> int:
-    """Extracts step number from tags like 'ckpt_500'. Returns 0 for 'baseline'."""
-    if tag.lower() in ("baseline", "base"):
+def parse_step_from_tag(tag: str, config: dict) -> int:
+    """Extracts step number from tags like 'ckpt_500', 'baseline', or 'final_adapter'.
+
+    - 'baseline' / 'base' → 0
+    - 'final' / 'final_adapter' / 'final_checkpoint' → config['total_training_steps']
+    - 'ckpt_NNNN' or any tag with digits → that integer
+    """
+    t = tag.lower()
+    if t in ("baseline", "base"):
         return 0
-    try:
-        return int(''.join(filter(str.isdigit, tag)))
-    except ValueError:
+    if t in ("final", "final_adapter", "final_checkpoint") or t.startswith("final"):
+        step = config.get("total_training_steps")
+        if step is None:
+            raise ValueError(
+                f"Tag '{tag}' designates the terminal adapter, but config has no 'total_training_steps'."
+            )
+        return int(step)
+    digits = ''.join(filter(str.isdigit, tag))
+    if not digits:
         raise ValueError(f"Cannot parse training step from tag '{tag}'")
+    return int(digits)
 
 
 def append_to_trajectory(step: int, acc: float, ci_lower: float, ci_upper: float, csv_path: Path) -> None:
@@ -177,7 +190,7 @@ def main() -> None:
     logger.info(f"Accuracy [{args.tag}]: {accuracy:.4f} (95% CI: {ci_lo:.4f} - {ci_hi:.4f})")
 
     # Update trajectory orchestrator
-    step = parse_step_from_tag(args.tag)
+    step = parse_step_from_tag(args.tag, config)
     csv_path = Path("results/rq2_probing/dynamic/trajectories_probing.csv")
     append_to_trajectory(step, accuracy, ci_lo, ci_hi, csv_path)
     logger.info(f"Trajectory alignment completed for step {step}")

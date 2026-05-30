@@ -143,11 +143,14 @@ def main() -> None:
         key=lambda x: int(x.name.split("-")[-1]) if "-" in x.name else 0
     )
 
-    # CL-01: Explicitly intercept and append final production adapter components to evaluation list
-    final_adapter_path = checkpoints_base / "final_checkpoint"
-    if final_adapter_path.exists():
-        logger.info("Located unmerged terminal adapter block. Appending to process pipeline targets.")
-        checkpoints.append(final_adapter_path)
+    # CL-01: Detect terminal LoRA adapter under either canonical name.
+    # Older runs used "final_checkpoint/"; current train_qlora.py emits "final_adapter/".
+    for terminal_name in ("final_adapter", "final_checkpoint"):
+        terminal_path = checkpoints_base / terminal_name
+        if terminal_path.exists():
+            logger.info(f"Located unmerged terminal adapter at '{terminal_name}'. Appending to pipeline targets.")
+            checkpoints.append(terminal_path)
+            break  # only the first match
 
     if not checkpoints:
         logger.warning(f"No valid adapter modules detected inside target base route: {checkpoints_base}")

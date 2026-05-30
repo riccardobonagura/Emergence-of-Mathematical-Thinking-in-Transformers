@@ -29,3 +29,4 @@ properties:
 output_dir: results/rq2_probing
 figures_dir: "results/figures/rq2_probing"
 eval_subset_size: 200
+total_training_steps: 12343
