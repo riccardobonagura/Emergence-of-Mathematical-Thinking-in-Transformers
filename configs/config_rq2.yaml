@@ -5,7 +5,7 @@ n_permutation_tests: 1000  # Aumentato per rigore scientifico
 bootstrap_n_samples: 1000 # Aumentato per intervalli stabili
 bootstrap_ci: 0.95
 max_iter: 1000
-C: 10.0
+C: 1.0  # override from C=10.0; C-sweep showed accuracy invariant over {0.01,0.1,1.0,10.0}; C=1.0 converges faster and is more confound-conservative
 solver: "lbfgs"
 multiclass_strategy: "ovr"
 n_jobs: -1                 # Usa tutti i core della workstation
@@ -23,7 +23,7 @@ properties:
     class_names: ["positive", "negative"]
   # Aggiungi altre proprietà se presenti in stimuli.jsonl
 
-# Canonical RQ2 output. C=10.0 was selected from the C-sweep (results/rq2_sweep/);
+# Canonical RQ2 output. C overridden to 1.0 (C-sweep invariance verified in results/rq2_sweep/);
 # the production run writes here, where the confound checkers, RQ3, eval_gsm8k,
 # and plot_rq3_trajectory all expect the weights/test_indices/dynamic to live.
 output_dir: results/rq2_probing

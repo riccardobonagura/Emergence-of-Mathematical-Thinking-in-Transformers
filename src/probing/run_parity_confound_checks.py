@@ -29,6 +29,11 @@ Benjamini-Hochberg FDR correction is applied across layers on the operand2
 value R² p-values (E-M-05), mirroring N-01.
 """
 
+import os
+for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+           "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS"):
+    os.environ.setdefault(_v, "1")  # pin BLAS to 1 thread/worker
+
 import argparse
 import json
 import logging
@@ -187,7 +192,7 @@ def main() -> None:
             LinearRegression().fit(X_train, rng.permutation(y_train_op2)).score(X_test, y_test_op2)
             for _ in range(n_permutations)
         ])
-        op2_pvalue = float((null_r2s_op2 >= op2_r2).mean())
+        op2_pvalue = float((np.sum(null_r2s_op2 >= op2_r2) + 1) / (n_permutations + 1))
         cos_parity_vs_op2 = float(cosine_similarity(w_parity, op2_probe.coef_.flatten()))
 
         # ── V2: operand2 parity decodability (the direct shortcut direction) ──

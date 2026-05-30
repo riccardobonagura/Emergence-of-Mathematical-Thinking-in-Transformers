@@ -9,6 +9,11 @@ Expected config["properties"] schema (v5):
     parity: {label_field: parity, category: CAT-PARITY, type: binary}
 """
 
+import os
+for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+           "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS"):
+    os.environ.setdefault(_v, "1")  # pin BLAS to 1 thread/worker; outer parallelism is joblib's job
+
 import argparse
 import hashlib
 import json

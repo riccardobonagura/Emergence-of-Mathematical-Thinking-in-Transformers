@@ -7,6 +7,11 @@ property or collapses into a surface token length/magnitude proxy of operand1.
 Enforces Benjamini-Hochberg FDR correction over control tests and dumps atomic metrics.
 """
 
+import os
+for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+           "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS"):
+    os.environ.setdefault(_v, "1")  # pin BLAS to 1 thread/worker
+
 import argparse
 import sys
 import json
@@ -146,7 +151,7 @@ def main() -> None:
             LinearRegression().fit(X_train, rng.permutation(y_train_op1)).score(X_test, y_test_op1)
             for _ in range(n_permutations)
         ])
-        op1_pvalue = float((null_r2s_op1 >= op1_r2).mean())
+        op1_pvalue = float((np.sum(null_r2s_op1 >= op1_r2) + 1) / (n_permutations + 1))
 
         # ── VERIFICATION 2: Vector Alignment (Cosine Similarity) ──
         w_op1 = op1_probe.coef_.flatten()
