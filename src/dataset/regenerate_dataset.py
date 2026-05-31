@@ -25,14 +25,14 @@ canonical path. The heavy stages re-read the canonical master and overwrite the
 extracted tensors / RQ2 results, so they REQUIRE --commit (a fresh dataset and stale
 tensors must never coexist at the canonical path).
 
-Examples
---------
+Examples (run from the repository root)
+---------------------------------------
     # Non-destructive: regenerate + inspect the new dataset only (CPU).
-    python regenerate_dataset.py
+    python -m src.dataset.regenerate_dataset
 
     # Commit the new dataset and rebuild everything downstream (GPU).
-    python regenerate_dataset.py --commit --with-extraction --with-rq2 --with-confounds \\
-        --config configs/config_rq2.yaml
+    python -m src.dataset.regenerate_dataset --commit --with-extraction --with-rq2 \\
+        --with-confounds --config configs/config_rq2.yaml
 """
 
 from __future__ import annotations

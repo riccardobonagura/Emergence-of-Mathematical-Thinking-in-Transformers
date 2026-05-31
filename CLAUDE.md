@@ -33,11 +33,9 @@ python -m src.viz.plot_ft_geometry_dynamics                                  # s
 
 ## Authority order (conflicts resolved top→bottom)
 
-1. @README_metodologico - overview and direction
-2. @HO_metodologico.md — epistemological principles (E-G-*, E-M-*, E-F-*, E-O-*)
-3. @Comandamenti — design hierarchy (O-*, S-*, C-*, A-*, B-*)
-4. @Approccio_architetturale — architectural decisions (ARCH-03 active, 01/02 deferred)
-5. Source code — always question choices
+1. @docs/Guida_Metodologica.md — epistemological principles + overview (E-G-*, E-M-*, E-F-*, E-O-*)
+2. @docs/Approccio_Architetturale.md — design hierarchy + architectural decisions (ARCH-03 active, 01/02 deferred)
+3. Source code — always question choices
 
 
 
@@ -57,7 +55,7 @@ python -m src.viz.plot_ft_geometry_dynamics                                  # s
 ## Architecture
 src/
 config/     categories.py (SSOT categories), models.py (ModelProfile registry)
-dataset/    build_stimuli.py, build_control.py, merge_stimuli.py
+dataset/    build_stimuli.py, build_control.py, merge_stimuli.py, regenerate_dataset.py
 extraction/ extract_states.py, checkpoint_loop.py
 metrics/    cka.py, isotropy.py
 probing/    seeds.py, pipeline.py, directions.py, stats.py,

@@ -338,7 +338,7 @@ def test_probing_algebra() -> None:
 # ── M-01: ISOTROPY SIGN-CONVENTION INVARIANT ──────────────────────────────────
 def test_isotropy_sign_convention() -> None:
     """
-    Locks the ISO formula direction documented in README_metodologico.md:
+    Locks the ISO formula direction documented in docs/Guida_Metodologica.md:
     ISO = mean off-diagonal cosine. High ISO → vectors collinear → anisotropic.
     Low ISO → vectors spread → isotropic. Consequently, ΔIso = ISO(math) − ISO(ctrl) < 0
     means math representations are *more isotropic* than control (not more anisotropic).

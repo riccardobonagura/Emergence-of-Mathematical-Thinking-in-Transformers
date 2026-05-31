@@ -1,3 +1,50 @@
+focus su tre dimensioni:
+
+1. **Leggibilità umana e AI** — un agente che legge un singolo file deve capire l'intero dominio verticale senza navigare tra 7 moduli separati
+2. **Rigore dei contratti** — TypedDict o dataclass espliciti tra orchestratori e worker, nessun dict implicito passato tra moduli
+3. **Navigabilità** — riduzione da 30+ file a ~9 file monolitici verticali, con sezioni interne che sostituiscono i file separati. (NON ADESSO)
+
+---
+
+### I TRE TASK ARCH
+
+**ARCH-01 — Refactor verticale monolitico** (Sospeso) Collassare i 30+ file in 6 file src/ monolitici. Ogni file è autocontenuto verticalmente — sezioni interne (`# ══ SECTION 1 — SEEDS ══`) sostituiscono i moduli separati. L'obiettivo è che leggere `probing.py` dall'inizio alla fine dia la comprensione completa del probing senza saltare tra file.
+
+**ARCH-02 — Orchestratore globale `run.py`** (Sospeso) CLI interattiva con stato persistito in `run_state.json`. Conosce i prerequisiti di ogni fase, blocca esecuzione fuori ordine, mostra lo stato corrente:
+
+```
+[1] Generate dataset     ✓ DONE
+[2] Extract states       ✓ DONE
+[3] RQ1 Geometry         ✓ DONE
+[4] RQ2 Probing          ✓ DONE
+[5] Fine-tuning          ✓ DONE
+[6] GSM8K eval           🔄 IN PROGRESS
+[7] Checkpoint loop      ⏳ WAITING
+[8] Visualize all        ⏳ WAITING
+```
+
+**ARCH-03 — Contratti espliciti** (Attivo) Definire TypedDict o dataclass per ogni handoff tra orchestratori e worker:
+
+```python
+@dataclass
+class ExtractionResult:
+    tensor_dir: Path
+    n_layers: int
+    d_model: int
+    n_stimuli: int
+
+@dataclass  
+class ProbingResult:
+    layer: int
+    property: str
+    accuracy: float
+    ci_lower: float
+    ci_upper: float
+    weights: np.ndarray
+    bias: float
+```
+
+
 ## Scala di principi — Design Hierarchy v1
 
 ```
@@ -133,3 +180,5 @@ Questa tabella guida l'AI durante la chain of thought su una decisione architett
 | **4. Come scrivere l'implementazione** | Un agente AI potrebbe estendere questo codice senza context aggiuntivo? | A-01 → A-03 → A-04 → A-02   |
 | **5. Quanto documentare**              | Cosa non è deducibile dal codice stesso?                                | B-03 → A-02 → B-01          |
 | **6. Review finale**                   | Questo ha aumentato o ridotto la complessità totale?                    | O-01 → B-01 → B-02 → B-04   |
+
+---
