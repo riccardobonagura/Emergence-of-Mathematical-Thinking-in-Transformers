@@ -417,6 +417,49 @@ def test_rq4_metric_functions() -> None:
                                [np.log(2.0)] * 2, atol=1e-5)
 
 
+# ── RQ4: TARGET-TOKEN BUILDER (stub tokenizer) ────────────────────────────────
+class _StubTokenizer:
+    """Maps exact strings to id lists so build_targets needs no real tokenizer."""
+    def __init__(self, table: dict) -> None:
+        self._table = table
+
+    def encode(self, text: str):
+        return self._table[text]
+
+
+def test_rq4_build_targets() -> None:
+    """Prefix-strip picks continuation[0]; single-token mask flags one-token results."""
+    from src.eval.determinization import build_targets
+
+    table = {
+        "A =": [1, 2],          # single-token positive
+        "A = 29": [1, 2, 99],
+        "B =": [3, 4],          # multi-token negative: first token is the sign " -"
+        "B = -29": [3, 4, 5, 6],
+        "C =": [7],             # control row — must be filtered out, never encoded for result
+    }
+    stimuli = [
+        {"id": "s0", "category": "CAT-SIGN", "text": "A =", "labels": {"result": 29}},
+        {"id": "s1", "category": "CTRL-NEU", "text": "C =", "labels": {"result": -1}},
+        {"id": "s2", "category": "CAT-PARITY", "text": "B =", "labels": {"result": -29}},
+    ]
+    target_ids, single = build_targets(_StubTokenizer(table), stimuli)
+
+    # Math rows only, in source order: [A(single), B(multi)].
+    assert target_ids.tolist() == [99, 5]
+    assert single.tolist() == [True, False]
+
+
+def test_rq4_build_targets_non_prefix_raises() -> None:
+    """encode(text) not a prefix of encode(text+' '+result) must fail fast."""
+    from src.eval.determinization import build_targets
+
+    table = {"A =": [1, 2], "A = 29": [9, 9, 9]}  # prefix mismatch
+    stimuli = [{"id": "s0", "category": "CAT-SIGN", "text": "A =", "labels": {"result": 29}}]
+    with pytest.raises(ValueError, match="not a prefix"):
+        build_targets(_StubTokenizer(table), stimuli)
+
+
 # ── M-01: ISOTROPY SIGN-CONVENTION INVARIANT ──────────────────────────────────
 def test_isotropy_sign_convention() -> None:
     """

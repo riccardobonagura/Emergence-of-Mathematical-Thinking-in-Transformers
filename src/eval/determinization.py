@@ -19,6 +19,8 @@ from typing import TypedDict
 
 import numpy as np
 
+from src.config.categories import MATH_CATS
+
 
 # ── SECTION 1 — ROW CONTRACT (ARCH-03) ────────────────────────────────────────
 
@@ -78,3 +80,45 @@ def prob_of_target(logits: np.ndarray, target_ids: np.ndarray) -> np.ndarray:
     rows = np.arange(x.shape[0])
     p_target = np.exp(log_p[rows, target_ids])
     return np.nan_to_num(p_target, nan=0.0).astype(np.float32)
+
+
+# ── SECTION 3 — TARGET-TOKEN BUILDER (tokenizer-dependent) ────────────────────
+
+def math_stimuli(stimuli: list[dict]) -> list[dict]:
+    """Math-category rows in source order. The single ordering RQ4 aligns to:
+    build_targets and extract_eq_logits must both filter through this helper."""
+    return [s for s in stimuli if s["category"] in MATH_CATS]
+
+
+def build_targets(tokenizer, stimuli: list[dict]) -> tuple[np.ndarray, np.ndarray]:
+    """Per math stimulus, the answer's first token id and a single-token mask.
+
+    The answer appears after "=" as a space-led number, so the target is the first
+    token of the continuation `text + " " + result`. encode(text) must be a true
+    prefix of encode(text + " " + result); otherwise the gather position and the
+    target token would refer to different tokenizations (fail fast, C-02).
+
+    single_token_mask marks rows whose result is exactly one token (positives/zeros);
+    multi-token rows are the negatives, whose first token is " -" (the answer's sign).
+    Returns (target_ids [n], single_token_mask [n]) aligned to math_stimuli order.
+    """
+    rows = math_stimuli(stimuli)
+    target_ids = np.empty(len(rows), dtype=np.int64)
+    single = np.empty(len(rows), dtype=bool)
+
+    for i, s in enumerate(rows):
+        text = s["text"]
+        result = s["labels"]["result"]
+        prefix = tokenizer.encode(text)
+        full = tokenizer.encode(f"{text} {result}")
+        if full[: len(prefix)] != prefix:
+            raise ValueError(
+                f"encode(text) is not a prefix of encode(text + ' ' + result) for id "
+                f"{s.get('id', '?')}: prefix={prefix} full={full}. The '=' gather "
+                "position would not align with the answer token."
+            )
+        continuation = full[len(prefix):]
+        target_ids[i] = continuation[0]
+        single[i] = (len(continuation) == 1)
+
+    return target_ids, single
