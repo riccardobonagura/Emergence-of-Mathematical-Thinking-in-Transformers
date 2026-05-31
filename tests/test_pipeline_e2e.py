@@ -358,6 +358,54 @@ def test_rq3_pipeline(mock_load, mock_pipeline_env, monkeypatch) -> None:
     assert (df["geom_delta_math_rel"] > 0.0).any(), "Relative Frobenius drift must be positive."
 
 
+# ── RQ4: DETERMINIZATION DRIVER INTEGRATION ───────────────────────────────────
+def test_rq4_pipeline(mock_pipeline_env, monkeypatch) -> None:
+    """Drives run_rq4.main with model+tokenizer loaders stubbed and logits synthetic."""
+    env = mock_pipeline_env
+    monkeypatch.chdir(env["root"])
+
+    # A second step besides base: an (empty) adapter dir the loader is patched to ignore.
+    (env["root"] / "data/processed/checkpoints/checkpoint-2500").mkdir(parents=True, exist_ok=True)
+
+    import importlib
+    import run_rq4
+    importlib.reload(run_rq4)
+
+    # 60 math rows in the fixture (30 CAT-SIGN + 30 CAT-PARITY). Synthesize aligned arrays.
+    n_math, vocab = 60, 20
+    rng = np.random.default_rng(0)
+    fake_logits = rng.standard_normal((n_math, vocab)).astype(np.float32)
+    fake_logits[np.arange(n_math), np.arange(n_math) % vocab] += 5.0  # a clear peak per row
+    target_ids = (np.arange(n_math) % vocab).astype(np.int64)
+    single_mask = np.arange(n_math) < 45  # mixed single/multi within each category
+
+    monkeypatch.setattr(run_rq4, "load_base_model", lambda mid: object())
+    monkeypatch.setattr(run_rq4, "load_tokenizer", lambda mid: object())
+    monkeypatch.setattr(run_rq4, "build_hooked_model", lambda b, mid, c: object())
+    monkeypatch.setattr(run_rq4, "build_targets", lambda tok, stim: (target_ids, single_mask))
+    monkeypatch.setattr(run_rq4, "extract_eq_logits", lambda m, stim, bs: fake_logits)
+
+    test_args = ["run_rq4.py", "--config", str(env["config"])]
+    with patch.object(sys, "argv", test_args):
+        run_rq4.main()
+
+    csv_path = env["root"] / "results/rq4_determinization/determinization.csv"
+    assert csv_path.exists(), "RQ4 determinization CSV missing."
+    df = pd.read_csv(csv_path)
+
+    expected_cols = {"step", "category", "n_rows", "n_single_token", "entropy_mean",
+                     "margin_mean", "p_first_token_mean", "p_correct_single",
+                     "p_correct_single_ci_lo", "p_correct_single_ci_hi"}
+    assert expected_cols.issubset(df.columns), f"Missing cols: {expected_cols - set(df.columns)}"
+
+    # Two steps (0 base + 2500) × two math categories → one row each, none duplicated.
+    assert set(df["step"]) == {0, 2500}
+    assert set(df["category"]) == {"CAT-SIGN", "CAT-PARITY"}
+    assert len(df) == 4
+    assert df.groupby(["step", "category"]).size().max() == 1
+    assert df["entropy_mean"].notna().all() and (df["p_correct_single"] >= 0).all()
+
+
 # ── FIX TE-08: PROBING DENORMALIZATION ALGEBRA VERIFIER ───────────────────────
 def test_probing_algebra() -> None:
     """Enforces strict unit validation testing on the classifier space projection algebra."""
