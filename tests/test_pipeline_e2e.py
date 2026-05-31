@@ -181,7 +181,13 @@ def test_rq1_pipeline(mock_iso, mock_load, mock_pipeline_env, monkeypatch) -> No
     # Sized to match the fixture's full stimuli count so RQ1's index lookups don't overflow
     with open(env["proc_dir"] / "metadata.json", "r", encoding="utf-8") as f:
         n_stim = json.load(f)["n_stimuli"]
-    fake_tensor = torch.randn((n_stim, 64)).numpy()
+    # Inject a shared anisotropic component so the mock "real" activations carry a
+    # common direction → positive mean-cosine isotropy, clearly above the
+    # random-Gaussian floor (which stays ≈0). Without this the random cloud would be
+    # indistinguishable from its own null floor and the E-G-01 assertion would be flaky.
+    base = torch.randn((n_stim, 64), generator=torch.Generator().manual_seed(0))
+    base[:, 0] += 3.0
+    fake_tensor = base.numpy()
     mock_load.return_value = fake_tensor
 
     import run_rq1
@@ -227,6 +233,14 @@ def test_rq1_pipeline(mock_iso, mock_load, mock_pipeline_env, monkeypatch) -> No
     assert {"layer", "iso_math", "iso_ctrl", "delta_iso", "n_per_side"}.issubset(df_iso.columns), \
         "Balanced isotropy table missing required columns."
     assert df_iso["n_per_side"].nunique() == 1, "Aggregated isotropy must use a single equal N across layers."
+
+    # E-G-01: random-Gaussian isotropy floor persisted as three additive columns.
+    floor_cols = {"iso_floor", "iso_floor_ci_low", "iso_floor_ci_high"}
+    assert floor_cols.issubset(df_iso.columns), f"Missing isotropy floor columns: {floor_cols - set(df_iso.columns)}"
+    # Real activations sit ABOVE their random-Gaussian floor; on the mock the floor
+    # is the null mean-cosine of an isotropic cloud (≈0), strictly below iso_math.
+    assert (df_iso["iso_floor"] < df_iso["iso_math"]).all(), \
+        "Isotropy floor must sit below iso_math (real data above its random-Gaussian floor)."
 
 
 # ── SECTION 2 — RQ2 PIPELINE INTEGRATION RUNNER ────────────────────────────────

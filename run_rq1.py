@@ -27,7 +27,11 @@ from src.metrics.cka import (
     linear_cka,
     procrustes_distance,
 )
-from src.metrics.isotropy import isotropy_exact, run_isotropy_analysis
+from src.metrics.isotropy import (
+    isotropy_exact,
+    random_gaussian_isotropy_floor,
+    run_isotropy_analysis,
+)
 from src.probing.io_utils import (
     MetadataHandler,
     _atomic_save_npy,
@@ -82,6 +86,7 @@ def main() -> None:
     # Derive operational directories and seeds from configuration file keys
     global_seed = int(config["seed"])
     cka_inter_boot_n = int(config.get("cka_inter_bootstrap_n", 50))
+    iso_floor_boot_n = int(config.get("iso_floor_bootstrap_n", 1000))
     PROC_DIR = Path("data/processed") / config["model_name"]
     STIMULI_PATH = Path("data/processed/dataset_master_v5.jsonl")
     OUT_DIR = Path("results/rq1_emergence")
@@ -394,6 +399,17 @@ def main() -> None:
         iso_m, _, ci_low_m, ci_high_m = isotropy_exact(H_math_t, n_bootstrap=1000, rng=iso_rng)
         iso_c, _, ci_low_c, ci_high_c = isotropy_exact(H_ctrl_t, n_bootstrap=1000, rng=iso_rng)
 
+        # Random-Gaussian norm-matched isotropy floor on the pooled balanced set
+        # (math_idx + ctrl_idx). Real hidden states sit well ABOVE this null floor —
+        # the floor anchors ΔIso interpretation so anisotropy is read as the normal
+        # state, not a semantic structure (E-G-01). Additive columns only.
+        H_pool = np.vstack([H_l[math_idx], H_l[ctrl_idx]])
+        iso_floor, iso_floor_lo, iso_floor_hi = random_gaussian_isotropy_floor(
+            H_pool,
+            n_bootstrap=iso_floor_boot_n,
+            base_seed=get_seed(global_seed, "iso_floor_layer", l),
+        )
+
         iso_rows.append({
             "layer": l,
             "iso_math": round(iso_m, 6),
@@ -404,6 +420,9 @@ def main() -> None:
             "ci_low_ctrl": round(ci_low_c, 6),
             "ci_high_ctrl": round(ci_high_c, 6),
             "n_per_side": int(n_sub),
+            "iso_floor": round(iso_floor, 6),
+            "iso_floor_ci_low": round(iso_floor_lo, 6),
+            "iso_floor_ci_high": round(iso_floor_hi, 6),
         })
 
     df_iso = pd.DataFrame(iso_rows)
