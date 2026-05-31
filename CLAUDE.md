@@ -58,11 +58,12 @@ config/     categories.py (SSOT categories), models.py (ModelProfile registry)
 dataset/    build_stimuli.py, build_control.py, merge_stimuli.py, regenerate_dataset.py
 extraction/ extract_states.py, checkpoint_loop.py
 metrics/    cka.py, isotropy.py
-probing/    seeds.py, pipeline.py, directions.py, stats.py,
-probing_dataset.py, engine.py, io_utils.py, run_confound_checks.py
+probing/    seeds.py, pipeline.py, directions.py, stats.py, probing_dataset.py,
+engine.py, io_utils.py, run_confound_checks.py, run_parity_confound_checks.py
 finetuning/ train_qlora.py
 eval/       eval_gsm8k.py, nf4_degradation.py
-viz/        plot_rq1_emergence.py, plot_rq3_trajectory.py, pca_umap_viz.py, probing_viz.py
+viz/        plot_rq1_emergence.py, plot_rq3_trajectory.py, plot_ft_geometry_dynamics.py,
+pca_umap_viz.py, probing_viz.py
 utils/      validate_configs.py, io_smoke_test.py
 run_rq1.py, run_rq2.py, run_rq3.py   # checkpoint loop is src/extraction/checkpoint_loop.py (no root copy)
 tests/test_pipeline_e2e.py
