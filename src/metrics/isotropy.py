@@ -213,6 +213,56 @@ def isotropy_monte_carlo(
 
 
 # ---------------------------------------------------------------------------
+# Random-Gaussian norm-matched isotropy floor (E-G-01)
+# ---------------------------------------------------------------------------
+def random_gaussian_isotropy_floor(
+    H_ref: np.ndarray,
+    n_bootstrap: int,
+    base_seed: int,
+) -> tuple[float, float, float]:
+    """Null floor for the mean-cosine isotropy metric on random Gaussian clouds.
+
+    Generates Gaussian point clouds matched to H_ref's shape and per-vector norm
+    distribution, then computes the SAME mean off-diagonal cosine that
+    isotropy_exact reports. The metric is LOW for isotropic (well-spread) clouds:
+    for d >> 1 this floor sits near 0, so real hidden states reading 0.7-0.99
+    confirm that anisotropy is the normal state rather than a semantic structure
+    (E-G-01). Seeds come only from get_seed.
+
+    Args:
+        H_ref: reference activations (N, d); supplies shape and norm scale.
+        n_bootstrap: number of independent Gaussian clouds for the CI.
+        base_seed: project base seed; per-cloud rng via get_seed(base_seed, "iso_floor", b).
+    Returns:
+        (floor_mean, ci_low, ci_high) — mean and percentile 95% CI of the per-cloud
+        mean-cosine isotropy.
+    """
+    from src.probing.seeds import get_seed
+
+    if n_bootstrap < 1:
+        raise ValueError("n_bootstrap must be >= 1.")
+
+    N, d = H_ref.shape
+    ref_norms = np.linalg.norm(H_ref, axis=1)
+
+    cloud_means = np.empty(n_bootstrap, dtype=np.float64)
+    for b in range(n_bootstrap):
+        rng = np.random.default_rng(get_seed(base_seed, "iso_floor", b))
+        directions = rng.standard_normal((N, d))
+        # Norm-match to H_ref (cosine is scale-invariant, but keep fidelity to the ref cloud).
+        sampled_norms = rng.choice(ref_norms, size=N, replace=True)
+        unit = directions / np.linalg.norm(directions, axis=1, keepdims=True)
+        cloud = (unit * sampled_norms[:, None]).astype(np.float32)
+        iso_mean, _, _, _ = isotropy_exact(torch.from_numpy(cloud))
+        cloud_means[b] = iso_mean
+
+    floor_mean = float(cloud_means.mean())
+    ci_low = float(np.percentile(cloud_means, 2.5))
+    ci_high = float(np.percentile(cloud_means, 97.5))
+    return floor_mean, ci_low, ci_high
+
+
+# ---------------------------------------------------------------------------
 # Tensor / Metadata alignment validation
 # ---------------------------------------------------------------------------
 def validate_alignment(
@@ -519,6 +569,7 @@ __all__ = [
     "estimate_isotropy",
     "isotropy_exact",
     "isotropy_monte_carlo",
+    "random_gaussian_isotropy_floor",
     "run_isotropy_analysis",
 ]
 
