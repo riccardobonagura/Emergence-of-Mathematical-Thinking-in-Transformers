@@ -105,8 +105,9 @@ def compute_nf4_snr_interpretation(
         mean_frob_rel: mean per-layer relative Frobenius distance (the floor).
         trajectory_df: RQ3 trajectory table (needs geom_delta_math_rel), or None.
     Returns:
-        (rq3_max_relative_drift, signal_to_noise_ratio, interpretation). The first
-        two are None when the trajectory CSV is absent (SNR not computable).
+        (rq3_max_relative_drift, signal_to_noise_ratio, interpretation). The SNR is
+        None — never Infinity/NaN — when the trajectory CSV is absent or the floor is
+        zero (SNR not computable); signal_to_noise_ratio must stay JSON-serializable.
     """
     if (
         trajectory_df is None
@@ -119,8 +120,17 @@ def compute_nf4_snr_interpretation(
         )
         return None, None, interp
 
+    if mean_frob_rel <= 0:
+        # A zero quantization floor makes SNR undefined; never divide (would yield
+        # Infinity/NaN, which is not valid JSON for signal_to_noise_ratio).
+        interp = (
+            f"floor only — mean relative Frobenius {mean_frob_rel:.3f}; "
+            "SNR not computable (zero quantization floor)"
+        )
+        return None, None, interp
+
     drift_signal = float(trajectory_df["geom_delta_math_rel"].max())
-    snr = drift_signal / mean_frob_rel if mean_frob_rel > 0 else float("inf")
+    snr = drift_signal / mean_frob_rel
     tail = (
         "drift exceeds quantization floor"
         if snr >= 3
