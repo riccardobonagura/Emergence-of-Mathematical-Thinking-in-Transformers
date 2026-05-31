@@ -370,6 +370,150 @@ def compute_cka_drift(cka_cross_temporal: dict[str, np.ndarray]) -> dict[str, np
     return drift_results
 
 
+# ── RQ1 robustness battery (E-G-02) ──────────────────────────────────────────
+# These corroborate (or refute) an inter-category CKA divergence claim. They are
+# additive helpers; linear_cka stays the biased estimator the rest of the pipeline
+# (and the self-CKA==1.0 assertions) depend on.
+
+def debiased_linear_cka(X: np.ndarray, Y: np.ndarray) -> float:
+    """Debiased linear CKA via the unbiased HSIC estimator (Song et al. 2012).
+
+    Uses the unbiased HSIC of Song et al. (2012), as adopted for CKA by
+    Nguyen, Raghu & Kornblith (2021). Unlike `linear_cka` (which keeps the biased
+    HSIC the rest of the pipeline relies on), this removes the small-sample upward
+    bias and can therefore return slightly negative values for unrelated
+    representations — that is expected and is NOT clipped to [0, 1].
+
+    Args:
+        X: activations (n, d_X).
+        Y: activations (n, d_Y). Same n as X.
+    Returns:
+        Debiased CKA, typically in [0, 1] but may dip slightly below 0.
+    Raises:
+        ValueError: if n != n or n < 4 (the estimator is undefined for n <= 3).
+    """
+    if X.shape[0] != Y.shape[0]:
+        raise ValueError(
+            f"X and Y must have the same number of samples. "
+            f"Got X.shape={X.shape}, Y.shape={Y.shape}"
+        )
+    n = X.shape[0]
+    if n < 4:
+        raise ValueError(f"debiased HSIC is undefined for n < 4 (got n={n}).")
+
+    K = X @ X.T
+    L = Y @ Y.T
+
+    def _hsic1(A: np.ndarray, B: np.ndarray) -> float:
+        # Zero the diagonals (tilde matrices), then the Song et al. (2012) form.
+        A = A.copy()
+        B = B.copy()
+        np.fill_diagonal(A, 0.0)
+        np.fill_diagonal(B, 0.0)
+        a_sum = A.sum()
+        b_sum = B.sum()
+        ab = float(np.sum(A * B))
+        row_dot = float(np.dot(A.sum(axis=1), B.sum(axis=1)))
+        term = (
+            ab
+            + a_sum * b_sum / ((n - 1) * (n - 2))
+            - 2.0 / (n - 2) * row_dot
+        )
+        return term / (n * (n - 3))
+
+    hsic_kl = _hsic1(K, L)
+    hsic_kk = _hsic1(K, K)
+    hsic_ll = _hsic1(L, L)
+
+    denom = np.sqrt(hsic_kk * hsic_ll)
+    if denom < 1e-10:
+        raise RuntimeError(
+            "Near-zero norm in debiased HSIC: representations are constant or nearly so."
+        )
+    return float(hsic_kl / denom)
+
+
+def procrustes_distance(X: np.ndarray, Y: np.ndarray) -> float:
+    """Orthogonal-Procrustes disparity between two equal-shape representations.
+
+    Column-centers and unit-Frobenius-normalizes each set, then aligns Y to X by
+    the optimal rotation. The disparity 1 - (sum of singular values of Y0^T X0)^2
+    is rotation-invariant: 0 when Y is an orthogonal transform of X, larger as the
+    relational geometry diverges. A high-variance/outlier-driven CKA divergence
+    should also show up here (cross-check for E-G-02).
+
+    Args:
+        X: activations (n, d).
+        Y: activations (n, d). Same shape as X.
+    Returns:
+        Procrustes disparity (>= 0).
+    Raises:
+        ValueError: if X and Y do not share the same shape.
+    """
+    if X.shape != Y.shape:
+        raise ValueError(f"X and Y must share shape. Got {X.shape} vs {Y.shape}.")
+
+    X0 = X - X.mean(axis=0, keepdims=True)
+    Y0 = Y - Y.mean(axis=0, keepdims=True)
+
+    x_norm = np.linalg.norm(X0)
+    y_norm = np.linalg.norm(Y0)
+    if x_norm < 1e-10 or y_norm < 1e-10:
+        raise RuntimeError("Near-zero norm: a representation is constant after centering.")
+    X0 = X0 / x_norm
+    Y0 = Y0 / y_norm
+
+    M = Y0.T @ X0
+    s = np.linalg.svd(M, compute_uv=False)
+    disparity = 1.0 - float(s.sum()) ** 2
+    return float(disparity)
+
+
+def leave_k_out_influence(
+    H_math: np.ndarray,
+    H_generic: np.ndarray,
+    k: int,
+    n_iter: int,
+    base_seed: int,
+) -> dict[str, float]:
+    """Sensitivity of inter-category CKA to dropping k samples per side.
+
+    A divergence driven by a handful of high-variance outliers (the failure mode
+    Davari et al. 2022 / Cloos et al. 2024 warn about) shows large influence; a
+    content-driven divergence is stable under leave-k-out. Seeds come only from
+    get_seed (project seed discipline).
+
+    Args:
+        H_math: math-stimulus activations (n1, d).
+        H_generic: generic-text activations (n2, d).
+        k: rows dropped per side each iteration.
+        n_iter: number of leave-k-out resamples.
+        base_seed: project base seed; per-iteration rng via get_seed(base_seed, "loo", i).
+    Returns:
+        {"base_cka", "max_abs_influence", "mean_abs_influence"}.
+    """
+    from src.probing.seeds import get_seed
+
+    base = compute_cka_intercategory(H_math, H_generic, seed=base_seed)
+    n1, n2 = H_math.shape[0], H_generic.shape[0]
+
+    deltas: list[float] = []
+    for i in range(n_iter):
+        rng = np.random.default_rng(get_seed(base_seed, "loo", i))
+        keep_math = rng.choice(n1, size=max(n1 - k, 1), replace=False)
+        keep_generic = rng.choice(n2, size=max(n2 - k, 1), replace=False)
+        cka_loo = compute_cka_intercategory(
+            H_math[keep_math], H_generic[keep_generic], seed=base_seed
+        )
+        deltas.append(abs(cka_loo - base))
+
+    return {
+        "base_cka": float(base),
+        "max_abs_influence": float(max(deltas)) if deltas else 0.0,
+        "mean_abs_influence": float(np.mean(deltas)) if deltas else 0.0,
+    }
+
+
 # ── Result persistence ───────────────────────────────────────────────────────
 
 def save_cka_results(
@@ -417,6 +561,9 @@ __all__ = [
     "compute_cka_intercategory_all_layers",
     "compute_cka_cross_temporal",
     "compute_cka_drift",
+    "debiased_linear_cka",
+    "procrustes_distance",
+    "leave_k_out_influence",
     "save_cka_results",
 ]
 
