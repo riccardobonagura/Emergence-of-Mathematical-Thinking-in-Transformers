@@ -1,13 +1,13 @@
 # lora_config.yaml — MetaMath / QLoRA Hyperparameters
 
-# ── Identificatori ────────────────────────────────────────────────────────────
+# ── Identifiers ───────────────────────────────────────────────────────────────
 model_name: "pythia-1.4b"
 
 # ── QLoRA Base Settings ───────────────────────────────────────────────────────
 r: 16
 lora_alpha: 32
 lora_dropout: 0.1
-# target_modules delegate al Model Registry (src/config/models.py)
+# target_modules delegated to the Model Registry (src/config/models.py)
 
 # ── Quantization ──────────────────────────────────────────────────────────────
 bits: 4
@@ -16,7 +16,7 @@ quant_type: "nf4"
 
 # ── Training / Optimization ───────────────────────────────────────────────────
 learning_rate: 2.0e-4
-batch_size: 8            # Training batch size (inferiore a extract_batch_size)
+batch_size: 8            # Training batch size (smaller than extract_batch_size)
 gradient_accumulation: 4
 num_epochs: 1
 warmup_ratio: 0.03

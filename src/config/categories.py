@@ -1,5 +1,5 @@
 """
-categories.py — Single Source of Truth for dataset category names.
+categories.py — dataset category names.
 Immutable definitions to prevent string-matching errors across the pipeline.
 """
 from typing import Tuple

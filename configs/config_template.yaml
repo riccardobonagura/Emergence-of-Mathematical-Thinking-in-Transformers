@@ -1,7 +1,7 @@
 # config_template.yaml — canonical configuration for run_rq2.py and run_rq3.py.
 # Copy to configs/config.yaml and fill in the values marked with <...>.
 
-# ── Identificatori ────────────────────────────────────────────────────────────
+# ── Identifiers ───────────────────────────────────────────────────────────────
 model_name:  "pythia-1.4b"           # Must match data/processed/<model_name>/
 
 # ── Directory ────────────────────────────────────────────────────────────────
@@ -11,7 +11,7 @@ figures_dir: "results/figures/rq2"
 # ── Probing setup ────────────────────────────────────────────────────────────
 train_split: 0.80
 seed:        42
-n_jobs:      -1                      # joblib: -1 = tutti i core disponibili
+n_jobs:      -1                      # joblib: -1 = use all available cores
 
 # ── Properties to probe ──────────────────────────────────────────────────────
 # Each entry defines one linear probe.

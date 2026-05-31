@@ -152,7 +152,7 @@ def extract_from_model(model, stimuli: list[dict], out_dir: Path, batch_size: in
     for l in range(n_layers):
         torch.save(layer_tensors[l], out_dir / f"layer_{l:02d}.pt")
 
-    # Modifica 2: Estrazione controllata dei metadati di versione con fallback sicuro
+    # dataset_version from the first stimulus, with a safe "v5" fallback
     default_version = stimuli[0].get("dataset_version", "v5") if stimuli else "v5"
 
     meta: ExtractionMetadata = {
