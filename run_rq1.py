@@ -20,7 +20,13 @@ import torch
 import yaml
 
 from src.config.categories import CTRL_CATS, MATH_CATS
-from src.metrics.cka import compute_cka_intercategory, linear_cka
+from src.metrics.cka import (
+    compute_cka_intercategory,
+    debiased_linear_cka,
+    leave_k_out_influence,
+    linear_cka,
+    procrustes_distance,
+)
 from src.metrics.isotropy import isotropy_exact, run_isotropy_analysis
 from src.probing.io_utils import (
     MetadataHandler,
@@ -299,6 +305,70 @@ def main() -> None:
         logger.warning("[!] WARNING: Terminal layer divergence is buried within baseline background noise.")
 
     df_cka = pd.DataFrame(results)
+
+    # ── INTER-CATEGORY ROBUSTNESS BATTERY (E-G-02) ────────────────────────────
+    # The authority makes inter-category CKA the PRIMARY metric and requires it to
+    # survive a 4-part battery before any "math diverges from language" claim. Here
+    # we run the cheap, deterministic checks post-hoc on the balanced math/ctrl sets:
+    # matched-baseline comparison (CTRL-NEU↔CTRL-NUM), debiased CKA, orthogonal
+    # Procrustes, and leave-k-out influence. A permutation null over category labels
+    # is the rigorous fourth leg but costs L×N_perm CKA evals — it is FUTURE WORK and
+    # deliberately not implemented here.
+
+    # (c1) Matched-baseline comparison from the assembled columns. A genuine
+    # content divergence sits BELOW the control↔control baseline; NaN baseline
+    # (no CTRL-NEU/CTRL-NUM split) compares False, which is the safe null.
+    df_cka["delta_vs_ctrl_baseline"] = df_cka["cka_inter_mean"] - df_cka["cka_ctrl_neu_vs_num"]
+    df_cka["divergence_exceeds_baseline"] = df_cka["cka_inter_mean"] < df_cka["cka_ctrl_neu_vs_num"]
+
+    # (c2) Debiased CKA + Procrustes + leave-k-out, per layer, on the balanced sets.
+    cka_loo_k = int(config.get("cka_loo_k", 10))
+    cka_loo_iter = int(config.get("cka_loo_iter", 20))
+
+    debiased_col, procrustes_col, loo_col = [], [], []
+    for l in range(n_layers):
+        H_l = load_hidden_states(PROC_DIR / f"layer_{l:02d}.pt").astype(np.float64)
+        H_m, H_c = H_l[math_idx], H_l[ctrl_idx]
+
+        if H_m.shape[0] <= 3:
+            # Battery undefined for n <= 3 (debiased HSIC); emit NaN like the Z-score guard.
+            debiased_col.append(float("nan"))
+            procrustes_col.append(float("nan"))
+            loo_col.append(float("nan"))
+            continue
+
+        try:
+            deb = debiased_linear_cka(H_m, H_c)
+        except (ValueError, RuntimeError):
+            deb = float("nan")
+        try:
+            proc = procrustes_distance(H_m, H_c)
+        except RuntimeError:
+            proc = float("nan")
+        try:
+            loo = leave_k_out_influence(
+                H_m, H_c, cka_loo_k, cka_loo_iter, get_seed(global_seed, "loo_battery", l)
+            )["max_abs_influence"]
+        except RuntimeError:
+            loo = float("nan")
+
+        debiased_col.append(round(deb, 6) if np.isfinite(deb) else deb)
+        procrustes_col.append(round(proc, 6) if np.isfinite(proc) else proc)
+        loo_col.append(round(loo, 6) if np.isfinite(loo) else loo)
+
+    df_cka["cka_inter_debiased"] = debiased_col
+    df_cka["procrustes_math_ctrl"] = procrustes_col
+    df_cka["leave_k_influence"] = loo_col
+
+    # (c3) One-line verdict: does the divergence claim survive the matched baseline?
+    n_exceed = int(df_cka["divergence_exceeds_baseline"].sum())
+    term_deb = df_cka["cka_inter_debiased"].iloc[-1]
+    term_bl = df_cka["cka_ctrl_neu_vs_num"].iloc[-1]
+    logger.info(
+        f"[Robustness] {n_exceed}/{n_layers} layers fall below the CTRL-NEU↔CTRL-NUM baseline; "
+        f"terminal-layer debiased inter-CKA={term_deb} vs matched baseline={term_bl}."
+    )
+
     output_csv_path = OUT_DIR / "cka_results_annotated.csv"
     _atomic_write_csv(output_csv_path, df_cka.to_dict("records"), df_cka.columns.tolist())
 

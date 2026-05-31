@@ -207,6 +207,14 @@ def test_rq1_pipeline(mock_iso, mock_load, mock_pipeline_env, monkeypatch) -> No
     assert (df["cka_inter_ci_low"] <= df["cka_inter_mean"] + 1e-9).all(), "ci_low above mean."
     assert (df["cka_inter_mean"] <= df["cka_inter_ci_high"] + 1e-9).all(), "mean above ci_high."
 
+    # Task C: matched-baseline + robustness battery columns.
+    battery_cols = {
+        "delta_vs_ctrl_baseline", "divergence_exceeds_baseline",
+        "cka_inter_debiased", "procrustes_math_ctrl", "leave_k_influence",
+    }
+    assert battery_cols.issubset(df.columns), f"Missing battery columns: {battery_cols - set(df.columns)}"
+    assert df["divergence_exceeds_baseline"].dtype == bool, "divergence_exceeds_baseline must be boolean."
+
     # M-03: per-layer inter-category CKA vector persisted as .npy
     cka_npy = out_rq1 / "cka_intercategory.npy"
     assert cka_npy.exists(), "RQ1 did not persist cka_intercategory.npy (M-03)."
