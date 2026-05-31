@@ -35,6 +35,29 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger("run_rq1")
 
 
+def _bootstrap_inter_cka(
+    H_math: np.ndarray,
+    H_ctrl: np.ndarray,
+    n_boot: int,
+    base_seed: int,
+    layer: int,
+) -> tuple[float, float, float]:
+    """Inter-category CKA as a bootstrap-with-replacement mean + percentile 95% CI.
+
+    Resamples the (already balanced) math/ctrl row sets independently each iteration
+    and recomputes CKA, turning the former single-seed point estimate into a real
+    mean with stimulus-level uncertainty (E-M-02). Seeds come only from get_seed.
+    """
+    n_m, n_c = H_math.shape[0], H_ctrl.shape[0]
+    vals = np.empty(n_boot, dtype=np.float64)
+    for b in range(n_boot):
+        rng = np.random.default_rng(get_seed(base_seed, "cka_inter_boot", layer * 1000 + b))
+        idx_m = rng.integers(0, n_m, size=n_m)
+        idx_c = rng.integers(0, n_c, size=n_c)
+        vals[b] = compute_cka_intercategory(H_math[idx_m], H_ctrl[idx_c], seed=base_seed)
+    return float(vals.mean()), float(np.percentile(vals, 2.5)), float(np.percentile(vals, 97.5))
+
+
 def main() -> None:
     # ── RQ1-01: ARGPARSE & CONFIGURATION INITIALIZATION ───────────────────────
     parser = argparse.ArgumentParser(description="Strict RQ1 Emergence Orchestrator")
@@ -52,6 +75,7 @@ def main() -> None:
 
     # Derive operational directories and seeds from configuration file keys
     global_seed = int(config["seed"])
+    cka_inter_boot_n = int(config.get("cka_inter_bootstrap_n", 50))
     PROC_DIR = Path("data/processed") / config["model_name"]
     STIMULI_PATH = Path("data/processed/dataset_master_v5.jsonl")
     OUT_DIR = Path("results/rq1_emergence")
@@ -180,13 +204,11 @@ def main() -> None:
     assert abs(base_self_cka_math - 1.0) < 1e-6, f"Self-CKA identity violation on math space: {base_self_cka_math}"
     assert abs(base_self_cka_ctrl - 1.0) < 1e-6, f"Self-CKA identity violation on control space: {base_self_cka_ctrl}"
 
-    # Inter-category CKA at layer 0 — point estimate only.
-    # E-M-03: layer-by-layer CI is replaced by the post-hoc Z-score baseline test
-    # (lines below) on ΔCKA, which gates terminal-layer significance against the
-    # background variance across layers 1..n-2.
-    inter_seed_l0 = get_seed(global_seed, "cka_inter_layer", 0)
-    cka_inter_point_0 = compute_cka_intercategory(
-        H_prev_math, H_prev_ctrl, seed=inter_seed_l0
+    # Inter-category CKA at layer 0 — bootstrap mean + percentile 95% CI over the
+    # balanced math/ctrl sets (E-M-02). The post-hoc Z-score baseline test on the
+    # evolutionary ΔCKA (lines below) remains a separate secondary check.
+    cka_inter_mean_0, cka_inter_lo_0, cka_inter_hi_0 = _bootstrap_inter_cka(
+        H_prev_math, H_prev_ctrl, cka_inter_boot_n, global_seed, 0
     )
 
     cka_ctrl_bl_0 = compute_cka_intercategory(
@@ -202,7 +224,9 @@ def main() -> None:
         "layer": 0,
         "cka_evo_math": 1.0,
         "cka_evo_ctrl": 1.0,
-        "cka_inter_mean": round(cka_inter_point_0, 6),
+        "cka_inter_mean": round(cka_inter_mean_0, 6),
+        "cka_inter_ci_low": round(cka_inter_lo_0, 6),
+        "cka_inter_ci_high": round(cka_inter_hi_0, 6),
         "cka_ctrl_neu_vs_num": round(cka_ctrl_bl_0, 6) if has_ctrl_baseline else None,
         "cka_math_template_baseline": round(cka_tpl_bl_0, 6) if has_tpl_baseline else None,
         "delta_cka_evolution": 0.0
@@ -225,10 +249,9 @@ def main() -> None:
         delta_cka = cka_c - cka_m
         cka_deltas.append(delta_cka)
 
-        # Inter-category CKA per layer — point estimate (see Z-score baseline below).
-        inter_seed = get_seed(global_seed, "cka_inter_layer", l)
-        cka_inter_point = compute_cka_intercategory(
-            H_curr_math, H_curr_ctrl, seed=inter_seed
+        # Inter-category CKA per layer — bootstrap mean + percentile 95% CI.
+        cka_inter_mean, cka_inter_lo, cka_inter_hi = _bootstrap_inter_cka(
+            H_curr_math, H_curr_ctrl, cka_inter_boot_n, global_seed, l
         )
 
         cka_ctrl_bl = compute_cka_intercategory(
@@ -244,7 +267,9 @@ def main() -> None:
             "layer": l,
             "cka_evo_math": round(cka_m, 6),
             "cka_evo_ctrl": round(cka_c, 6),
-            "cka_inter_mean": round(cka_inter_point, 6),
+            "cka_inter_mean": round(cka_inter_mean, 6),
+            "cka_inter_ci_low": round(cka_inter_lo, 6),
+            "cka_inter_ci_high": round(cka_inter_hi, 6),
             "cka_ctrl_neu_vs_num": round(cka_ctrl_bl, 6) if has_ctrl_baseline else None,
             "cka_math_template_baseline": round(cka_tpl_bl, 6) if has_tpl_baseline else None,
             "delta_cka_evolution": round(delta_cka, 6)

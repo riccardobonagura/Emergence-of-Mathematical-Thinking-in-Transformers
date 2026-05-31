@@ -201,6 +201,12 @@ def test_rq1_pipeline(mock_iso, mock_load, mock_pipeline_env, monkeypatch) -> No
     assert required_cols.issubset(df.columns), f"Metrics table schema mismatch. Missing: {required_cols - set(df.columns)}"
     assert len(df) == 24, "Layer indices mismatch inside the output metrics table rows."
 
+    # Task D: cka_inter_mean is now a bootstrap mean bracketed by its percentile CI.
+    ci_cols = {"cka_inter_ci_low", "cka_inter_ci_high"}
+    assert ci_cols.issubset(df.columns), f"Missing inter-category CI columns: {ci_cols - set(df.columns)}"
+    assert (df["cka_inter_ci_low"] <= df["cka_inter_mean"] + 1e-9).all(), "ci_low above mean."
+    assert (df["cka_inter_mean"] <= df["cka_inter_ci_high"] + 1e-9).all(), "mean above ci_high."
+
     # M-03: per-layer inter-category CKA vector persisted as .npy
     cka_npy = out_rq1 / "cka_intercategory.npy"
     assert cka_npy.exists(), "RQ1 did not persist cka_intercategory.npy (M-03)."
