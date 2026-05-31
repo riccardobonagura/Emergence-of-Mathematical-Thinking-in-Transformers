@@ -1,10 +1,12 @@
 """
 nf4_degradation.py — Baseline control for NF4 quantization stability (T16).
-Measures representational degradation introduced purely by 4-bit compression.
+Measures representational degradation introduced purely by 4-bit compression,
+comparing an unquantized BF16 reference against the double-quantized NF4 model
+(both BF16 compute) so the metric reflects 4-bit weight quantization alone.
 
-Enforces structural fixes N-01 to N-07 by synchronizing attention masks, unifying
-dimensional Frobenius benchmarks, stratifying evaluation categories, and binding the
-architecture directly to the centralized YAML configuration registry.
+Aligns the two passes (shared attention masks, stratified evaluation set,
+config-driven model identity) and reports relative + dimension-normalized
+Frobenius distance per layer.
 """
 
 import argparse
@@ -39,10 +41,10 @@ def extract_native_states(
     n_layers: int,
     batch_size: int = 32
 ) -> None:
-    """
-    Extracts activations using native PyTorch forward hooks.
-    FIX N-01: Explicitly forwards the attention_mask payload to model invocation,
-    ensuring rigorous alignment with baseline extraction masks behavior.
+    """Extract last-token activations per layer using native PyTorch forward hooks.
+
+    Forwards an explicit attention_mask so both passes (reference and NF4) see
+    identical masking.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     layer_accumulators: dict[int, list[torch.Tensor]] = {l: [] for l in range(n_layers)}
@@ -54,7 +56,7 @@ def extract_native_states(
             activations[layer_idx] = output[0][:, -1, :].detach().cpu()
         return hook
 
-    # Register hooks along the native HF GPT-NeoX layer topology paths
+    # Register hooks on the native HF GPT-NeoX layers.
     handles = []
     for l in range(n_layers):
         handle = model.gpt_neox.layers[l].register_forward_hook(make_hook(l))
@@ -64,7 +66,6 @@ def extract_native_states(
         batch = stimuli[i : i + batch_size]
         texts = [s["text"] for s in batch]
 
-        # FIX N-01: Symmetrical mask generation forced via return_attention_mask
         tokens_out = tokenizer(
             texts,
             padding=True,
@@ -82,13 +83,14 @@ def extract_native_states(
         handle.remove()
 
     for l in range(n_layers):
-        H = torch.cat(layer_accumulators[l], dim=0).half()
+        # Store in float32: FP16 storage overflows on Pythia's deep-layer rogue
+        # dimensions (values > 65504 -> inf -> NaN Frobenius ratios at layers 12+).
+        H = torch.cat(layer_accumulators[l], dim=0).float()
         torch.save(H, out_dir / f"layer_{l:02d}.pt")
 
 
 def main() -> None:
-    # ── N-07: CONFIG-DRIVEN CLI INTEGRATION ───────────────────────────────────
-    parser = argparse.ArgumentParser(description="Strict NF4 Quantization Degradation Verifier")
+    parser = argparse.ArgumentParser(description="NF4 quantization degradation baseline (T16)")
     parser.add_argument(
         "--config",
         required=True,
@@ -104,7 +106,7 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     setup_logging(out_dir)
 
-    # ── N-06: SINGLE SOURCE OF TRUTH MODEL IDENTIFICATION ─────────────────────
+    # Model identity from the config / profile registry.
     model_name = config["model_name"]
     model_profile = get_model_profile(model_name)
     base_model_id = model_profile["hf_path"]
@@ -118,10 +120,9 @@ def main() -> None:
     full_stimuli = load_stimuli(stimuli_path)
     df_stimuli = pd.DataFrame(full_stimuli)
 
-    # ── N-03: RANDOM STRATIFIED CROSS-CATEGORY SUBSAMPLING ────────────────────
-    # Eradicates contiguous slice bias (originally skewed entirely to CAT-SIGN).
-    # Draws exactly 75 items across all 4 categories to assemble a representative 300 pool.
-    logger.info("Executing balanced stratified category extraction across dataset blocks...")
+    # Stratified subsample: 75 items per category (300 total) to avoid the
+    # single-category slice bias of a contiguous draw.
+    logger.info("Drawing balanced stratified subsample across categories...")
     sampling_seed = get_seed(global_seed, "nf4_degradation_sampling", 0)
     rng_strat = np.random.default_rng(sampling_seed)
 
@@ -138,34 +139,36 @@ def main() -> None:
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    with tempfile.TemporaryDirectory() as tmp_fp16_str, tempfile.TemporaryDirectory() as tmp_nf4_str:
-        tmp_fp16 = Path(tmp_fp16_str)
+    with tempfile.TemporaryDirectory() as tmp_ref_str, tempfile.TemporaryDirectory() as tmp_nf4_str:
+        tmp_ref = Path(tmp_ref_str)
         tmp_nf4 = Path(tmp_nf4_str)
 
-        # ── PASS 1: NATIVE FP16 EXTRACTION ────────────────────────────────────
-        logger.info(f"Instantiating baseline {model_name} in native uncompressed FP16...")
-        hf_fp16 = AutoModelForCausalLM.from_pretrained(
+        # Pass 1: unquantized BF16 reference. BF16 shares FP32's exponent range,
+        # so Pythia's large deep-layer activations do not overflow, and it
+        # matches NF4's bnb_4bit_compute_dtype=bfloat16 — isolating the pure
+        # 4-bit weight-quantization effect.
+        logger.info(f"Instantiating baseline {model_name} in unquantized BF16 reference...")
+        hf_ref = AutoModelForCausalLM.from_pretrained(
             base_model_id,
-            torch_dtype=torch.float16,
+            torch_dtype=torch.bfloat16,
             device_map="cuda",
             attn_implementation=model_profile.get("attn_implementation", "eager")
         )
-        n_layers = hf_fp16.config.num_hidden_layers
+        n_layers = hf_ref.config.num_hidden_layers
 
-        logger.info("Running FP16 forward pass representation caching...")
-        extract_native_states(hf_fp16, tokenizer, selected_stimuli, tmp_fp16, n_layers, batch_size=32)
-        del hf_fp16
+        logger.info("Caching BF16 reference activations...")
+        extract_native_states(hf_ref, tokenizer, selected_stimuli, tmp_ref, n_layers, batch_size=32)
+        del hf_ref
         torch.cuda.empty_cache()
 
-        # ── PASS 2: HARDENED ALLIGNED NF4 EXTRACTION ──────────────────────────
-        # FIX N-04: Injected bnb_4bit_use_double_quant=True to explicitly lock matching
-        # parity with the quantization footprints applied during training.
-        logger.info(f"Instantiating {model_name} in target double-quantized NF4 framework...")
+        # Pass 2: double-quantized NF4 model. double_quant matches the
+        # quantization used during training.
+        logger.info(f"Instantiating {model_name} in double-quantized NF4...")
         bnb_cfg = BitsAndBytesConfig(
             load_in_4bit=True,
             bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=torch.bfloat16,  # Optimized for RTX 5080 stability
-            bnb_4bit_use_double_quant=True          # FIX N-04: double_quant alignment active
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_use_double_quant=True
         )
         hf_nf4 = AutoModelForCausalLM.from_pretrained(
             base_model_id,
@@ -174,27 +177,26 @@ def main() -> None:
             attn_implementation=model_profile.get("attn_implementation", "eager")
         )
 
-        logger.info("Running quantized NF4 forward pass representation caching...")
+        logger.info("Caching NF4 activations...")
         extract_native_states(hf_nf4, tokenizer, selected_stimuli, tmp_nf4, n_layers, batch_size=32)
         del hf_nf4
         torch.cuda.empty_cache()
 
-        # ── PASS 3: RIGOROUS METRICS ASSESSMENT LOOPS ─────────────────────────
-        logger.info("Computing mathematical representational distortion thresholds...")
+        # Per-layer distance between reference and NF4 representations.
+        logger.info("Computing per-layer representational distance...")
         metrics = []
         for l in range(n_layers):
-            H_fp16 = torch.load(tmp_fp16 / f"layer_{l:02d}.pt", map_location="cpu", weights_only=True).float()
+            H_ref = torch.load(tmp_ref / f"layer_{l:02d}.pt", map_location="cpu", weights_only=True).float()
             H_nf4 = torch.load(tmp_nf4 / f"layer_{l:02d}.pt", map_location="cpu", weights_only=True).float()
-            diff = H_nf4 - H_fp16
-            N, d = H_fp16.shape
+            diff = H_nf4 - H_ref
+            N, d = H_ref.shape
 
-            # ── FIX N-02: DUAL METRIC REPORTING PARADIGM ──────────────────────
-            # Computes BOTH standard relative Frobenius and dimension-normalized distance
-            # to enable seamless comparison against downstream run_rq3.py trajectories logs.
-            frob_dist_relative = float(torch.linalg.norm(diff, "fro") / torch.linalg.norm(H_fp16, "fro"))
+            # Report both relative Frobenius and a dimension-normalized distance
+            # for comparison against run_rq3.py trajectories.
+            frob_dist_relative = float(torch.linalg.norm(diff, "fro") / torch.linalg.norm(H_ref, "fro"))
             frob_dist_normalized_dim = float(torch.linalg.norm(diff, "fro") / (N * d))
 
-            mean_cos = float(F.cosine_similarity(H_nf4, H_fp16, dim=1).mean())
+            mean_cos = float(F.cosine_similarity(H_nf4, H_ref, dim=1).mean())
             max_abs = float(diff.abs().max())
 
             metrics.append({
@@ -211,8 +213,8 @@ def main() -> None:
         mean_frob_rel = float(df_metrics["frobenius_dist_relative"].mean())
         mean_frob_norm = float(df_metrics["frobenius_dist_normalized_dim"].mean())
 
-        # ── FIX N-05: DETTMERS ET AL. (2023) VALIDATED INTERPRETATION BOUNDARIES ──
-        # References empirical constraints (<3% degradation for 1B-7B scales) instead of manual thresholds.
+        # Interpretation bands from Dettmers et al. (2023): <3% degradation for
+        # 1B-7B scales is the empirical baseline.
         if mean_frob_rel < 0.03:
             interpretation = "negligible — quantization noise is under the 3% boundary established by Dettmers et al. (2023)"
         elif mean_frob_rel < 0.05:
@@ -222,6 +224,8 @@ def main() -> None:
 
         summary = {
             "model_name": model_name,
+            "reference_dtype": "bfloat16",
+            "quantized_dtype": "nf4 (double-quant, bf16 compute)",
             "mean_frobenius_relative": round(mean_frob_rel, 6),
             "mean_frobenius_normalized_dim": round(mean_frob_norm, 7),
             "interpretation": interpretation,
@@ -230,9 +234,9 @@ def main() -> None:
         }
         _atomic_write_json(out_dir / "summary.json", summary)
 
-        logger.info("NF4 Quantization Degradation audit loop completed.")
+        logger.info("NF4 degradation analysis complete.")
         logger.info(f"Mean Relative Frobenius: {mean_frob_rel * 100:.2f}% -> {interpretation}")
-        logger.info(f"Rigorous data summaries saved cleanly to {out_dir}")
+        logger.info(f"Summaries saved to {out_dir}")
 
 
 if __name__ == "__main__":

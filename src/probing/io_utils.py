@@ -1,8 +1,8 @@
 # src/probing/io_utils.py
 """
-io_utils.py — Hardened I/O, metadata parsing, tensor loading, and atomic file writes.
-Enforces strict UTF-8 compliance, PyTorch 2.x/2.4+ warnings prevention, type consistency,
-and atomic durability patterns to prevent file corruption upon unexpected execution kills.
+io_utils.py — I/O helpers: metadata parsing, tensor loading, and atomic file writes.
+Uses UTF-8 throughout and atomic temp-file + os.replace writes to avoid corruption
+if a run is interrupted.
 """
 
 import csv
@@ -30,7 +30,7 @@ class MetadataHandler:
     def _load(self) -> Dict[str, Any]:
         if not self.path.exists():
             raise FileNotFoundError(f"Metadata not found: {self.path}")
-        # FIX IO-01: Explicit encoding prevents crash on non-UTF-8 host setups (e.g. native WSL2 environments)
+        # Explicit encoding avoids crashes on non-UTF-8 host defaults.
         with open(self.path, encoding="utf-8") as f:
             return json.load(f)
 
@@ -44,7 +44,7 @@ class MetadataHandler:
         return len(pt_files)
 
     def get_d_model(self, default: int = 2048) -> int:
-        """Return d_model from metadata layer metrics (defaults to Pythia-1.4B footprint)."""
+        """Return d_model from metadata, else the given default (Pythia-1.4B = 2048)."""
         return int(self.data.get("d_model", default))
 
     def get_stimuli_ids(self) -> List[str]:
@@ -57,9 +57,8 @@ class MetadataHandler:
 
     def get_labels(self, field: str) -> np.ndarray:
         """
-        Extract targets block from metadata.
-        FIX IO-05: Enforces np.int64 to maintain strict compatibility with NumPy index
-        arrays and scikit-learn interfaces, eliminating silent truncation and casting warnings.
+        Extract the targets block from metadata.
+        Casts to np.int64 for compatibility with NumPy indexing and scikit-learn.
         """
         labels_block = self.data.get("labels", {})
         if field not in labels_block:
@@ -90,9 +89,8 @@ def setup_logging(output_dir: Path) -> logging.Logger:
 
 def load_hidden_states(layer_path: Path) -> np.ndarray:
     """
-    Loads pre-extracted activation arrays safely into memory.
-    FIX IO-02: Explicitly passes weights_only=True to silence PyTorch 2.x deprecation
-    warnings and secure the unpickling loop against future structural breaking changes.
+    Load a pre-extracted activation array into memory.
+    Uses weights_only=True (safe unpickling, no PyTorch 2.x deprecation warning).
     """
     if not layer_path.exists():
         raise FileNotFoundError(f"Hidden states tensor missing: {layer_path}")
@@ -100,10 +98,10 @@ def load_hidden_states(layer_path: Path) -> np.ndarray:
 
 
 def load_metadata(metadata_path: Path) -> Dict[str, Any]:
-    """Decodes standalone dictionary structures from extraction metadata paths."""
+    """Load extraction metadata from a JSON file."""
     if not metadata_path.exists():
         raise FileNotFoundError(f"Metadata file missing: {metadata_path}")
-    # FIX IO-01: Explicit encoding forced for stability across unaligned OS defaults
+    # Explicit encoding for stability across OS defaults.
     with open(metadata_path, encoding="utf-8") as f:
         return json.load(f)
 
@@ -111,7 +109,7 @@ def load_metadata(metadata_path: Path) -> Dict[str, Any]:
 # ── SECTION 3 — ATOMIC FILE WRITERS & PERSISTENCE HELPERS ─────────────────────
 
 def _atomic_write_csv(output_path: Path, rows: List[Dict], fieldnames: List[str]) -> None:
-    """Atomically commits structured log metadata records via OS replacement swaps."""
+    """Atomically write rows to a CSV via a temp file + os.replace."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=output_path.parent, suffix=".csv")
     try:
@@ -126,11 +124,11 @@ def _atomic_write_csv(output_path: Path, rows: List[Dict], fieldnames: List[str]
 
 
 def _atomic_write_json(output_path: Path, data: Dict) -> None:
-    """Atomically dumps metrics payloads to mitigate corruption upon unexpected termination."""
+    """Atomically write JSON via a temp file + os.replace."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=output_path.parent, suffix=".json")
     try:
-        # FIX IO-01: Enforces explicit encoding contract inside low-level fd wrappers
+        # Explicit encoding inside the low-level fd wrapper.
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
         os.replace(tmp, output_path)
@@ -140,11 +138,7 @@ def _atomic_write_json(output_path: Path, data: Dict) -> None:
 
 
 def _atomic_save_npy(output_path: Path, arr: np.ndarray) -> None:
-    """
-    FIX IO-04: Helper utility to handle binary NumPy serialization atomically.
-    Allocates an isolated file descriptor and commits a complete array buffer before
-    executing an atomic metadata override swap via os.replace.
-    """
+    """Write a NumPy array atomically: write to a temp file, then os.replace."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=output_path.parent, suffix=".npy")
     try:
@@ -157,17 +151,15 @@ def _atomic_save_npy(output_path: Path, arr: np.ndarray) -> None:
 
 
 def save_test_indices(output_dir: Path, prop_name: str, test_indices: np.ndarray) -> None:
-    """Persist train/test split partitions to guarantee frozen spatial isolation evaluations."""
+    """Persist train/test split indices (frozen before probing)."""
     d = output_dir / "test_indices"
-    # Unified with the new atomic saving layer to guarantee data-split persistence safety
     _atomic_save_npy(d / f"{prop_name}_test_idx.npy", test_indices)
 
 
 def load_test_indices(output_dir: Path, prop_name: str) -> np.ndarray:
     """
-    Retrieves the frozen validation splits pre-allocated before linear probing.
-    FIX IO-03: Integrates a fail-fast assertion checkpoint to enforce rule E-P-03
-    from the epistemological standards manual, providing contextual recovery guidelines.
+    Retrieve the frozen validation split saved before probing.
+    Fails fast if missing, enforcing E-P-03 (splits saved before training).
     """
     path = output_dir / "test_indices" / f"{prop_name}_test_idx.npy"
     if not path.exists():
@@ -187,9 +179,8 @@ def save_weights(
     b_orig: np.ndarray,
 ) -> None:
     """
-    Persists hyperplane projection coefficients back into original unscaled activation spaces.
-    FIX IO-04: Encapsulates weight arrays inside the atomic save loop to prevent truncated
-    null files if a cluster or workstation process kill signal interrupts execution mid-epoch.
+    Persist probe weights (denormalized to the original activation space).
+    Uses atomic saves so an interrupted run can't leave truncated weight files.
     """
     d = output_dir / "weights"
     _atomic_save_npy(d / f"layer_{layer_idx:02d}_{prop_name}.npy", w_orig)

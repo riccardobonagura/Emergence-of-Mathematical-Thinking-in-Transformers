@@ -1,12 +1,10 @@
 """
-stats.py — Inference statistics, bootstrapping intervals, and multiple comparisons correction.
-Enforces strict seed discipline across all stochastic evaluation steps.
+stats.py — bootstrap intervals, permutation testing, and multiple-comparison correction.
+Seeds are passed in explicitly (no default seed parameters).
 
-CORRECTED:
-- Fixed bootstrap_ci parameter naming to match engine.py expectations (n_samples).
-- Restored internal cross-validation for permutation testing to prevent test-set leakage.
-- Maintained strict seed discipline without default parameters.
-- HARDENED: Forced n_jobs=1 in permutation_test_score to prevent nested parallelism deadlocks
+Notes:
+- Permutation testing uses internal cross-validation to avoid test-set leakage.
+- permutation_test_score runs with n_jobs=1 to avoid nested-parallelism deadlocks
   under joblib's loky backend when called from run_rq2.py.
 """
 

@@ -2,8 +2,7 @@
 plot_rq1_emergence.py — RQ1 interactive dashboard (Plotly HTML).
 
 Reads:  results/rq1_emergence/isotropy_pythia.csv
-        results/rq1_emergence/cka_math_evol.npy
-        results/rq1_emergence/cka_ctrl_evol.npy
+        results/rq1_emergence/cka_results_annotated.csv (cols cka_evo_math, cka_evo_ctrl)
 
 Outputs: results/figures/rq1_emergence/rq1_emergence.html
 
@@ -27,18 +26,20 @@ def plot_rq1_dashboard() -> None:
     OUT_DIR     = Path("results/figures/rq1_emergence")
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    iso_file      = RESULTS_DIR / "isotropy_pythia.csv"
-    cka_math_file = RESULTS_DIR / "cka_math_evol.npy"
-    cka_ctrl_file = RESULTS_DIR / "cka_ctrl_evol.npy"
+    iso_file   = RESULTS_DIR / "isotropy_pythia.csv"
+    cka_file   = RESULTS_DIR / "cka_results_annotated.csv"
 
-    if not all(p.exists() for p in (iso_file, cka_math_file, cka_ctrl_file)):
+    if not all(p.exists() for p in (iso_file, cka_file)):
         raise FileNotFoundError(
             "RQ1 data missing — run run_rq1.py first."
         )
 
     df_iso   = pd.read_csv(iso_file)
-    cka_math = np.load(cka_math_file)
-    cka_ctrl = np.load(cka_ctrl_file)
+    # Evolutionary CKA now lives as columns in the annotated CSV (run_rq1 no
+    # longer emits standalone cka_*_evol.npy files).
+    df_cka   = pd.read_csv(cka_file).sort_values("layer")
+    cka_math = df_cka["cka_evo_math"].to_numpy()
+    cka_ctrl = df_cka["cka_evo_ctrl"].to_numpy()
 
     n_layers = len(cka_math)
     layers   = np.arange(n_layers)

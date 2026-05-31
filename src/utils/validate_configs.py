@@ -59,7 +59,6 @@ def _validate_probing_schema(config: Dict[str, Any]) -> None:
     Executes typed assertions on key fields and v5 verification constraints.
     Prevents silent runtime KeyErrors by pre-gating bootstrapping and training structures.
     """
-    # HARDENED: Added bootstrap_ci and bootstrap_n_samples to required validation keys
     required_keys = {
         "model_name", "output_dir", "figures_dir", "train_split",
         "seed", "n_jobs", "properties", "bootstrap_ci", "bootstrap_n_samples",
@@ -111,7 +110,7 @@ def _validate_probing_schema(config: Dict[str, Any]) -> None:
 
 def load_and_validate_lora_config(config_path: Path | str) -> Dict[str, Any]:
     """
-    Loads and validates lora_config.yaml for hardware orchestration fine-tuning (RQ3).
+    Load and validate lora_config.yaml for QLoRA fine-tuning (RQ3).
     Ensures quantization targets are clamped to 4 or 8 bits.
     """
     path = Path(config_path)
@@ -129,7 +128,7 @@ def load_and_validate_lora_config(config_path: Path | str) -> Dict[str, Any]:
     if "target_modules" in config:
         raise ValueError(
             "target_modules must not be manually set in lora_config.yaml. "
-            "Delegate layer selection explicitly to ModelRegistry orchestration wrappers."
+            "It is set automatically from the model profile."
         )
 
     if config["bits"] not in (4, 8):
@@ -185,7 +184,7 @@ def validate_extraction(extraction_dir: str) -> list[str]:
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Strict production-grade YAML configuration validator.")
+    parser = argparse.ArgumentParser(description="Validate project YAML configs.")
     parser.add_argument("--probing", type=str, help="Path to config.yaml to validate probing targets.")
     parser.add_argument("--lora", type=str, help="Path to lora_config.yaml to validate training targets.")
     parser.add_argument("--extraction", type=str, default=None, metavar="EXTRACTION_DIR",

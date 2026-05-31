@@ -9,6 +9,7 @@ import argparse
 import json
 import logging
 import math
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -19,6 +20,7 @@ import yaml
 import lm_eval
 from lm_eval.utils import make_table
 
+from src.config.models import get_model_profile
 from src.probing.io_utils import (_atomic_write_csv, _atomic_write_json,
                                    setup_logging)
 from src.probing.seeds import get_seed
@@ -113,19 +115,19 @@ def check_adapter_consistency(model_path: str, strategy: str) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Strict GSM8K Evaluation")
+    parser = argparse.ArgumentParser(description="0-shot GSM8K evaluation")
     parser.add_argument("--model_path", type=str, required=True, help="HF Hub ID, local merged path, or adapter path.")
     parser.add_argument("--tag", type=str, required=True, help="Evaluation tag (e.g., 'baseline', 'ckpt_500').")
     parser.add_argument("--config", type=str, required=True, help="Path to config.yaml to extract global seed architecture.")
     parser.add_argument("--loading_strategy", type=str, default="peft", choices=["peft", "merged_cpu", "merged_direct"])
     args = parser.parse_args()
 
-    # Enforce strict configuration seed fetching over manual default fallbacks
     with open(args.config, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
 
-    # Derive a dedicated, isolated evaluation seed hash for lm_eval
+    # Dedicated evaluation seed for lm_eval.
     eval_seed = get_seed(config["seed"], "gsm8k_evaluation", 0)
+    base_model_id = get_model_profile(config["model_name"])["hf_path"]
 
     json_out_dir = Path("results/gsm8k")
     logger = setup_logging(json_out_dir)
@@ -136,13 +138,20 @@ def main() -> None:
         logger.error(str(e))
         sys.exit(1)
 
-    logger.info(f"Starting rigorous 0-shot evaluation on GSM8K for {args.tag}")
+    logger.info(f"Starting 0-shot GSM8K evaluation for {args.tag}")
 
-    # Base model string formulation for lm_eval
+    # Model spec for lm_eval; base id comes from the model profile.
     if args.loading_strategy == "peft":
-        model_args = f"pretrained=EleutherAI/pythia-1.4b,peft={args.model_path}"
+        model_args = f"pretrained={base_model_id},peft={args.model_path}"
     else:
         model_args = f"pretrained={args.model_path}"
+
+    # Batch size: fixed integer via GSM8K_BATCH_SIZE for memory-bounded GPUs,
+    # else "auto" (lm-eval batch detection). On 16GB cards "auto" can OOM during
+    # generation KV-cache growth, so a fixed value is the safe fallback.
+    bs_env = os.environ.get("GSM8K_BATCH_SIZE", "auto").strip()
+    batch_size = int(bs_env) if bs_env.isdigit() else bs_env
+    logger.info(f"Using batch_size={batch_size}")
 
     # Simple_evaluate executing 0-shot regime with explicit seed encapsulation
     results = lm_eval.simple_evaluate(
@@ -150,7 +159,7 @@ def main() -> None:
         model_args=model_args,
         tasks=["gsm8k"],
         num_fewshot=0,             # Documented 0-shot boundary
-        batch_size="auto",
+        batch_size=batch_size,
         device="cuda",
         limit=None,                # Full evaluation
         random_seed=eval_seed,
@@ -189,7 +198,7 @@ def main() -> None:
     logger.info(f"\n{make_table(results)}")
     logger.info(f"Accuracy [{args.tag}]: {accuracy:.4f} (95% CI: {ci_lo:.4f} - {ci_hi:.4f})")
 
-    # Update trajectory orchestrator
+    # Append to the trajectory CSV.
     step = parse_step_from_tag(args.tag, config)
     csv_path = Path("results/rq2_probing/dynamic/trajectories_probing.csv")
     append_to_trajectory(step, accuracy, ci_lo, ci_hi, csv_path)

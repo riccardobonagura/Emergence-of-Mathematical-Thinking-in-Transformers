@@ -314,8 +314,8 @@ def main() -> None:
             ),
         },
     }
-    with meta_path.open("w", encoding="utf-8") as fh:
-        json.dump(meta, fh, ensure_ascii=False, indent=2)
+    from src.probing.io_utils import _atomic_write_json
+    _atomic_write_json(meta_path, meta)
 
     # ── Summary ────────────────────────────────────────────────────────────
     print("\n✓  MERGE COMPLETE")

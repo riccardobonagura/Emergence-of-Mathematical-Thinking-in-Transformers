@@ -1,8 +1,7 @@
 #!/usr/bin/env python
 """
-train_qlora.py — Config-driven QLoRA fine-tuning orchestrator on MetaMathQA.
-Enforces statistical guards (T-01 to T-08), strict validation splitting (E-F-02),
-and numerical optimization guidelines for modern workstation GPUs (RTX 5080).
+train_qlora.py — config-driven QLoRA fine-tuning on MetaMathQA.
+Uses a held-out validation split (E-F-02) and settings tuned for a 16GB GPU.
 """
 
 import argparse
@@ -34,17 +33,14 @@ logger = logging.getLogger("train_qlora")
 
 
 def main() -> None:
-    # ── T-01: ENV-02 CRITICAL COMPATIBILITY GUARD ─────────────────────────────
-    # Ensures the current transformers suite does not trigger the fatal GPT-NeoX
-    # vmap/SDPA attention tracing core bug during either caching or backward passes.
+    # Guard against the GPT-NeoX vmap/SDPA bug in transformers >= 4.49.
     assert transformers.__version__ < "4.49", (
         f"Fatal: Environment conflict. Transformers version is {transformers.__version__}. "
         "The GPT-NeoX vmap/SDPA runtime bug affects QLoRA backward passes. "
         "Downgrade to transformers < 4.49 to ensure training stability."
     )
 
-    # ── T-03: CLI ENTRY POINT CONFIGURATION PATH ROUTING ──────────────────────
-    parser = argparse.ArgumentParser(description="Hardened QLoRA Fine-Tuning Suite")
+    parser = argparse.ArgumentParser(description="QLoRA fine-tuning on MetaMathQA")
     parser.add_argument(
         "--config",
         required=True,
@@ -59,29 +55,25 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    # Load configurations cleanly with explicit contract mappings
     with open(args.config, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
     with open(args.lora_config, "r", encoding="utf-8") as f:
         lora_hyperparams = yaml.safe_load(f)
 
-    # Centralize seed allocation and setup determinism anchors
     global_seed = int(config["seed"])
     set_seed(global_seed)
 
     model_name = config["model_name"]
-    # Delegate target modules extraction to the architectural SSOT Model profile
+    # Target modules come from the model profile.
     model_profile = get_model_profile(model_name)
 
-    # ── T-04: CONFIG-DRIVEN OUTPUT DIRECTORY RESOLUTION ───────────────────────
+    # Output directory from config.
     output_dir = Path(config.get("checkpoints_dir", "data/processed/checkpoints"))
     output_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info(f"Initializing QLoRA fine-tuning pipeline for model profile: {model_name}")
 
-    # ── T-08: NUMERICAL QUANTIZATION & COMPUTE CONFIGURATION ──────────────────
-    # RTX 5080 leverages Ada Lovelace architecture; bfloat16 provides strict numerical
-    # stability over traditional fp16 under deep gradients manipulation loops.
+    # NF4 quantization; bf16 compute (more stable than fp16 on Ada).
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_quant_type="nf4",
@@ -89,7 +81,7 @@ def main() -> None:
         bnb_4bit_use_double_quant=True
     )
 
-    logger.info("Loading quantized base model profile onto hardware device...")
+    logger.info("Loading quantized base model...")
     base_model = AutoModelForCausalLM.from_pretrained(
         model_profile["hf_path"],
         quantization_config=bnb_config,
@@ -97,12 +89,11 @@ def main() -> None:
         attn_implementation=model_profile.get("attn_implementation", "eager")
     )
 
-    # ── T-02: CORRECT PEFT K-BIT INITIALIZATION SEQUENCE ──────────────────────
-    # Enforces the mandatory sequence constraint: gradient checkpointing must be injected
-    # inside the kbit preparation contract wrap itself to prevent broken hooks in PEFT.
+    # Gradient checkpointing must be enabled inside kbit preparation, before
+    # wrapping with PEFT, or the hooks break.
     base_model = prepare_model_for_kbit_training(base_model, use_gradient_checkpointing=True)
 
-    # Instantiate the structural LoRA adapters configuration layout
+    # LoRA adapter config.
     peft_config = LoraConfig(
         r=int(lora_hyperparams["r"]),
         lora_alpha=int(lora_hyperparams["lora_alpha"]),
@@ -114,16 +105,14 @@ def main() -> None:
     model = get_peft_model(base_model, peft_config)
     model.print_trainable_parameters()
 
-    # Setup tokenizer layout matching left-padding invariants
+    # Tokenizer with left padding.
     tokenizer = AutoTokenizer.from_pretrained(model_profile["hf_path"])
     tokenizer.padding_side = "left"
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    # ── T-05: VALIDATION SPLITTING & OVERFITTING DETECTION (E-F-02) ───────────
-    # Resolves Principle E-F-02 (Epoch Sufficiency tracking). Splitting the massive
-    # MetaMathQA layout into a clear 95/5 partition to track validation loss trends.
-    logger.info("Loading MetaMathQA reasoning dataset from HuggingFace Hub...")
+    # 95/5 train/val split to track validation loss (E-F-02).
+    logger.info("Loading MetaMathQA dataset from HuggingFace Hub...")
     raw_dataset = load_dataset("meta-math/MetaMathQA", split="train")
 
     split_seed = get_seed(global_seed, "dataset_splitting", 0)
@@ -131,16 +120,13 @@ def main() -> None:
     train_data = dataset_splits["train"]
     val_data = dataset_splits["test"]
 
-    # ── T-06: SEQUENTIAL CHAIN-OF-THOUGHT TRUNCATION MITIGATION ───────────────
-    # LIMITATION STATEMENT: The absolute boundary is expanded to 1024 tokens.
-    # Original configurations limited at 512 tokens truncated longer GSM8K
-    # Multi-Step Chain-of-Thought solutions, training the model on incomplete syntax.
+    # 1024 tokens: 512 truncated longer chain-of-thought solutions.
     max_seq_length = 1024
 
     def formatting_prompts_func(examples):
         texts = []
         for q, r in zip(examples["query"], examples["response"]):
-            # Standard structural prompt wrapper for MetaMath instruction sets
+            # MetaMath prompt format.
             text = f"Instruction: {q}\nResponse: {r}{tokenizer.eos_token}"
             texts.append(text)
 
@@ -153,10 +139,9 @@ def main() -> None:
         inputs["labels"] = inputs["input_ids"].copy()
         return inputs
 
-    # ── T-07: PARALLEL MULTI-THREADED TOKENIZATION MAPPING ────────────────────
-    # Spreads tokenization overhead evenly across CPU workers (Defaults to 8 or local max).
+    # Spread tokenization across CPU workers (up to 8).
     num_workers = min(8, os.cpu_count() or 1)
-    logger.info(f"Commencing parallel text compilation mapping across {num_workers} CPU cores...")
+    logger.info(f"Tokenizing across {num_workers} CPU workers...")
 
     tokenized_train = train_data.map(
         formatting_prompts_func,
@@ -173,7 +158,7 @@ def main() -> None:
         desc="Compiling validation dataset token blocks"
     )
 
-    # ── T-08: ACCELERATED PRODUCTION TRAINING ARGUMENTS ───────────────────────
+    # Training arguments.
     training_args = TrainingArguments(
         output_dir=str(output_dir),
         per_device_train_batch_size=int(config.get("train_batch_size", 8)),
@@ -188,7 +173,7 @@ def main() -> None:
         weight_decay=0.01,
         warmup_ratio=0.03,
         lr_scheduler_type="cosine",
-        bf16=True,                             # HARDWARE STABILITY FIX FOR RTX 5080
+        bf16=True,                             # bf16 for RTX 5080 stability
         tf32=True,                             # Ampere/Ada Lovelace TensorCore acceleration
         gradient_checkpointing=True,
         ddp_find_unused_parameters=False,

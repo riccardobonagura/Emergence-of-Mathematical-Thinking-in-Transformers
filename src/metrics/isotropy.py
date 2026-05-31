@@ -390,7 +390,8 @@ def run_isotropy_analysis(
             log.info("Layer %02d/%02d completed.", l + 1, n_layers)
 
     df = pd.DataFrame(results)
-    df.to_csv(out_file, index=False)
+    from src.probing.io_utils import _atomic_write_csv
+    _atomic_write_csv(Path(out_file), df.to_dict("records"), df.columns.tolist())
     log.info("Results saved to: %s", out_file)
     return df
 

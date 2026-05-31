@@ -1,168 +1,96 @@
 """
-Metriche per il confronto tra spazi di rappresentazione.
+Linear Centered Kernel Alignment (CKA) for comparing representation spaces.
 
-Contenuti previsti (Fase 3 - CKA):
-- Implementazione del Centered Kernel Alignment (CKA) in variante lineare
-  (Linear CKA), utilizzando matrici di Gram lineari K = X X^T, L = Y Y^T.
-- Centratura delle matrici di Gram tramite matrice di centratura H:
-      H = I_n - (1/n) * 1 1^T
-  e K_c = H K H, L_c = H L H.
+Linear CKA uses linear Gram matrices K = X X^T, L = Y Y^T, centered with
+H = I_n - (1/n) 1 1^T (so K_c = H K H), then
+    CKA(X, Y) = <K_c, L_c>_F / sqrt(<K_c, K_c>_F <L_c, L_c>_F).
 
-Questo modulo espone un'API pubblica compatta per CKA lineare:
-- `linear_cka(X, Y)`
-- `cka_matrix_across_layers(activations_per_layer)`
+Three usage modes back the project's research questions:
+  1. Intra-model CKA  — L×L matrix comparing every layer pair of one model.
+  2. Inter-category   — per layer, math vs generic-text representations (RQ1).
+  3. Cross-temporal   — base model vs QLoRA checkpoints, per layer (RQ3).
+
+The live pipeline (run_rq1.py) uses only `linear_cka` and
+`compute_cka_intercategory`; the other helpers are kept as a reusable API.
 """
 
 from __future__ import annotations
 
-"""
-cka_analysis.py
-===============
-Modulo per il calcolo della Centered Kernel Alignment (CKA) nella pipeline
-"Dinamica Geometrica nei Transformer".
-
-Implementa tre modalità d'uso (cfr. Pipeline.md, Fase 5 e file CKA.md):
-
-  1. CKA intra-modello   → matrice L×L che confronta ogni coppia di layer
-                           sullo stesso modello; produce la heatmap triangolare
-                           che rivela la struttura gerarchica della rete.
-
-  2. CKA inter-categoria → per ogni layer, confronta le rappresentazioni di
-                           stimoli matematici vs. testo generico; identifica
-                           il layer l* di biforcazione geometrica (RQ1).
-
-  3. CKA cross-temporale → confronta, layer per layer, le rappresentazioni del
-                           modello base con quelle dei checkpoint QLoRA;
-                           misura la deformazione plastica del manifold (RQ3).
-
-Dipendenze: numpy, torch, tqdm, pathlib
-"""
+import logging
+from pathlib import Path
+from typing import Iterable
 
 import numpy as np
 import torch
-from pathlib import Path
 from tqdm import tqdm
-from typing import Iterable
+
+from src.probing.io_utils import _atomic_save_npy
+
+logger = logging.getLogger("cka")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# BLOCCO 1 — Primitiva matematica: center_gram
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Math primitive: center_gram ──────────────────────────────────────────────
 
 def center_gram(K: np.ndarray) -> np.ndarray:
-    """
-    Applica la matrice di centratura di Gower alla Gram matrix K.
+    """Center a Gram matrix: K' = H K H, making CKA invariant to translations.
 
-    La centratura rimuove la dipendenza dalla media delle rappresentazioni,
-    rendendo la metrica invariante a traslazioni costanti nello spazio latente.
-
-    Matematicamente:
-        H  = I_n  -  (1/n) * 1*1^T        ← matrice di centratura n×n
-        K' = H K H                          ← Gram centrata
-
-    Note implementative:
-        Invece di costruire esplicitamente H (che ha dimensione n×n e
-        richiederebbe O(n²) di memoria extra), si sfrutta l'identità algebrica:
-            H K H = K - row_mean - col_mean + global_mean
-        dove row_mean[i,j] = mean(K[i,:]) e col_mean[i,j] = mean(K[:,j]).
-        Questo è numericamente equivalente ma più efficiente.
+    Uses the algebraic identity H K H = K - row_mean - col_mean + global_mean
+    to avoid materializing the n×n centering matrix H.
 
     Args:
-        K (np.ndarray): Gram matrix di forma (n, n), tipicamente K = X @ X.T
-
+        K: Gram matrix (n, n), typically X @ X.T.
     Returns:
-        np.ndarray: Gram matrix centrata K', stessa forma di K.
+        Centered Gram matrix, same shape as K.
     """
-    n = K.shape[0]
-
-    # Media per riga:  vettore (n,), broadcast a (n, n)
-    row_mean = K.mean(axis=1, keepdims=True)   # shape (n, 1)
-
-    # Media per colonna: vettore (n,), broadcast a (n, n)
-    col_mean = K.mean(axis=0, keepdims=True)   # shape (1, n)
-
-    # Media globale: scalare, serve per correggere il doppio conteggio
+    row_mean = K.mean(axis=1, keepdims=True)   # (n, 1)
+    col_mean = K.mean(axis=0, keepdims=True)   # (1, n)
     global_mean = K.mean()
-
-    # H K H  =  K  -  row_mean  -  col_mean  +  global_mean
-    K_centered = K - row_mean - col_mean + global_mean
-
-    return K_centered
+    return K - row_mean - col_mean + global_mean
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# BLOCCO 2 — Primitiva matematica: linear_cka
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Math primitive: linear_cka ───────────────────────────────────────────────
 
 def linear_cka(X: np.ndarray, Y: np.ndarray) -> float:
-    """
-    Calcola la CKA lineare tra due insiemi di rappresentazioni X e Y.
+    """Linear CKA between two representation sets X and Y.
 
-    La CKA misura quanto la *struttura relazionale* tra i campioni sia simile
-    nei due spazi — indipendentemente dalla dimensionalità (d1 può ≠ d2) e
-    invariante a trasformazioni ortogonali e scalamenti isotropi.
-
-    Formula:
-        K  = X @ X.T    ← Gram matrix di X, shape (n, n)
-        L  = Y @ Y.T    ← Gram matrix di Y, shape (n, n)
-        K' = HKH        ← centratura
-        L' = HLH
-
-        CKA(X, Y) = <K', L'>_F / sqrt(<K', K'>_F * <L', L'>_F)
-
-    dove <A, B>_F = tr(A^T B) = sum(A * B)  (prodotto di Frobenius).
-
-    Il valore è in [0, 1]:
-        1.0  → geometrie identiche (a meno di rotazioni/scalamenti)
-        0.0  → geometrie completamente indipendenti
+    Measures how similar the relational structure of the samples is across the
+    two spaces; invariant to orthogonal transforms and isotropic scaling, and
+    independent of dimensionality (d_X may differ from d_Y). Returns a value in
+    [0, 1]: 1.0 = identical geometry (up to rotation/scaling), 0.0 = unrelated.
 
     Args:
-        X (np.ndarray): Attivazioni del layer l1, forma (n_samples, d1).
-                        n_samples deve essere uguale per X e Y.
-        Y (np.ndarray): Attivazioni del layer l2, forma (n_samples, d2).
-
+        X: Layer activations (n_samples, d_X).
+        Y: Layer activations (n_samples, d_Y). Same n_samples as X.
     Returns:
-        float: Valore CKA in [0, 1].
-
+        CKA value in [0, 1].
     Raises:
-        ValueError: Se X e Y hanno numero di campioni diverso.
-        RuntimeError: Se la norma è zero (rappresentazioni costanti).
+        ValueError: if X and Y have a different number of samples.
+        RuntimeError: if a representation is (near-)constant (zero norm).
     """
     if X.shape[0] != Y.shape[0]:
         raise ValueError(
-            f"X e Y devono avere lo stesso numero di campioni. "
-            f"Ricevuti: X.shape={X.shape}, Y.shape={Y.shape}"
+            f"X and Y must have the same number of samples. "
+            f"Got X.shape={X.shape}, Y.shape={Y.shape}"
         )
 
-    n = X.shape[0]
-
-    # ── Step 1: Gram matrices (kernel lineare) ──────────────────────────────
-    # K[i,j] = X[i] · X[j]  (prodotto scalare tra il campione i e il campione j)
-    # Questa matrice cattura la struttura relazionale interna allo spazio X.
+    # Linear-kernel Gram matrices: K[i,j] = X[i] . X[j].
     K = X @ X.T   # (n, n)
     L = Y @ Y.T   # (n, n)
 
-    # ── Step 2: Centratura ──────────────────────────────────────────────────
-    K_c = center_gram(K)   # K' = HKH
-    L_c = center_gram(L)   # L' = HLH
+    K_c = center_gram(K)
+    L_c = center_gram(L)
 
-    # ── Step 3: Prodotto di Frobenius (= tr(A^T B) = sum(A * B) element-wise)
-    # <K', L'>_F misura quanto le due strutture di similarità si "allineano"
-    hsic_kl = np.sum(K_c * L_c)   # HSIC(X, Y) ∝ tr(K' L')
-
-    # Norme di Frobenius al quadrato (auto-similarità, usate per normalizzare)
+    # Frobenius inner products: <A, B>_F = sum(A * B).
+    hsic_kl = np.sum(K_c * L_c)   # HSIC(X, Y)
     hsic_kk = np.sum(K_c * K_c)   # HSIC(X, X)
     hsic_ll = np.sum(L_c * L_c)   # HSIC(Y, Y)
 
-    # ── Step 4: Normalizzazione ─────────────────────────────────────────────
     denom = np.sqrt(hsic_kk * hsic_ll)
-
     if denom < 1e-10:
-        # Caso degenere: una delle due rappresentazioni è costante
-        # (tutti i vettori identici → Gram matrix centrata = 0)
+        # Degenerate case: a representation is constant (centered Gram = 0).
         raise RuntimeError(
-            "Norma quasi-zero: le rappresentazioni sono costanti o quasi. "
-            "Verifica che gli hidden state siano stati estratti correttamente."
+            "Near-zero norm: representations are constant or nearly so. "
+            "Check that hidden states were extracted correctly."
         )
 
     return float(hsic_kl / denom)
@@ -171,33 +99,25 @@ def linear_cka(X: np.ndarray, Y: np.ndarray) -> float:
 def cka_matrix_across_layers(
     activations_per_layer: Iterable[np.ndarray | torch.Tensor],
 ) -> np.ndarray:
-    """
-    Costruisce una matrice CKA layer x layer a partire da una sequenza di
-    attivazioni per layer.
-
-    API high-level pensata per pipeline in memoria:
-        - input: lista/iterabile di array [n_samples, d_l]
-        - output: matrice simmetrica [L, L] con CKA lineare
+    """Build a layer×layer CKA matrix from a sequence of per-layer activations.
 
     Args:
-        activations_per_layer: sequenza di tensori/array, uno per layer.
-            Ogni elemento deve avere forma [n_samples, d_l], con lo stesso
-            numero di campioni n_samples tra layer.
-
+        activations_per_layer: one array/tensor per layer, each [n_samples, d_l]
+            with the same n_samples across layers.
     Returns:
-        np.ndarray: Matrice CKA [L, L].
+        Symmetric CKA matrix [L, L].
     """
     layers = [_to_numpy_2d(x) for x in activations_per_layer]
     n_layers = len(layers)
     if n_layers == 0:
-        raise ValueError("activations_per_layer e' vuoto.")
+        raise ValueError("activations_per_layer is empty.")
 
     n_samples = layers[0].shape[0]
     for idx, arr in enumerate(layers):
         if arr.shape[0] != n_samples:
             raise ValueError(
-                f"Numero campioni incoerente al layer {idx}: "
-                f"{arr.shape[0]} vs atteso {n_samples}"
+                f"Inconsistent sample count at layer {idx}: "
+                f"{arr.shape[0]} vs expected {n_samples}"
             )
 
     cka_mat = np.zeros((n_layers, n_layers), dtype=np.float64)
@@ -215,42 +135,32 @@ def _to_numpy_2d(x: np.ndarray | torch.Tensor) -> np.ndarray:
     else:
         arr = np.asarray(x)
     if arr.ndim != 2:
-        raise ValueError(f"Atteso array 2D [n, d], ricevuto shape={arr.shape}")
+        raise ValueError(f"Expected a 2D array [n, d], got shape={arr.shape}")
     return arr
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# BLOCCO 3 — Subsampling riproducibile
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Reproducible subsampling ─────────────────────────────────────────────────
 
 def subsample_indices(n_total: int, n_sub: int, seed: int = 42) -> np.ndarray:
-    """
-    Seleziona n_sub indici casuali da [0, n_total) in modo riproducibile.
+    """Pick n_sub reproducible random indices from [0, n_total).
 
-    Il subsampling è necessario perché la Gram matrix ha dimensione (n × n):
-    con n = 1500 stimoli → 1500² = 2.25M elementi per layer → 576 calcoli per
-    la matrice L×L. Con n_sub = 512 il costo diventa gestibile su CPU in pochi
-    minuti (cfr. nota computazionale in Pipeline.md, Fase 5).
-
-    La stima CKA su subsample è statisticamente stabile per n_sub ≥ 256
-    (verificato empiricamente in letteratura).
+    Subsampling keeps the n×n Gram matrices tractable; CKA estimates are stable
+    for n_sub >= 256. Callers should pass a project seed (get_seed); the 42
+    default preserves historical behavior.
 
     Args:
-        n_total (int): Numero totale di campioni disponibili.
-        n_sub   (int): Numero di campioni da selezionare (n_sub ≤ n_total).
-        seed    (int): Seed per la riproducibilità (default: 42).
-
+        n_total: total available samples.
+        n_sub: number to select (n_sub <= n_total).
+        seed: RNG seed.
     Returns:
-        np.ndarray: Array di n_sub indici interi unici, ordinati.
+        Sorted array of n_sub unique integer indices.
     """
     rng = np.random.default_rng(seed)
     indices = rng.choice(n_total, size=min(n_sub, n_total), replace=False)
-    return np.sort(indices)  # ordinati per facilità di debug
+    return np.sort(indices)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# BLOCCO 4 — Uso 1: CKA intra-modello (matrice L×L)
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Mode 1: intra-model CKA (L×L matrix) ─────────────────────────────────────
 
 def compute_cka_matrix_intramodel(
     hidden_states_dir: Path,
@@ -259,114 +169,79 @@ def compute_cka_matrix_intramodel(
     seed: int = 42,
     device: str = "cpu",
 ) -> np.ndarray:
-    """
-    Calcola la matrice CKA L×L confrontando ogni coppia di layer dello stesso
-    modello sullo stesso dataset di stimoli.
+    """Compute the L×L CKA matrix comparing every layer pair of one model.
 
-    Questa è la "Fase 5 — Invarianza Topologica" della pipeline (Pipeline.md).
-    La heatmap risultante rivela:
-      - Blocchi contigui ad alta CKA → "stadi" del processo di elaborazione
-      - Salti bruschi → transizioni rappresentazionali, potenziale l* (RQ1)
-
-    I file degli hidden state si aspettano in:
-        hidden_states_dir/layer_00.pt  → Tensor (N, d)
-        hidden_states_dir/layer_01.pt
-        ...
+    High-CKA contiguous blocks indicate processing "stages"; sharp drops mark
+    representational transitions. Expects files hidden_states_dir/layer_XX.pt.
 
     Args:
-        hidden_states_dir (Path): Directory con i file layer_XX.pt.
-        n_layers          (int):  Numero totale di layer del modello.
-        n_sub             (int):  Dimensione del subsample (default: 512).
-        seed              (int):  Seed per il subsampling (default: 42).
-        device            (str):  "cpu" o "cuda" per il caricamento tensori.
-
+        hidden_states_dir: directory with layer_XX.pt files.
+        n_layers: number of model layers.
+        n_sub: subsample size.
+        seed: subsampling seed.
+        device: "cpu" or "cuda".
     Returns:
-        np.ndarray: Matrice simmetrica CKA di forma (n_layers, n_layers),
-                    valori in [0, 1]. L'elemento [i, j] è CKA(layer_i, layer_j).
+        Symmetric (n_layers, n_layers) CKA matrix, values in [0, 1].
     """
-    # ── Caricamento del primo layer per determinare N (numero stimoli) ──────
     first_layer_path = hidden_states_dir / "layer_00.pt"
     H_first = torch.load(first_layer_path, map_location=device).cpu().numpy()  # (N, d)
     N = H_first.shape[0]
-    # fp16 Gram matrices (X @ X.T over d=2048) lose precision / risk overflow;
-    # match the inter-category and cross-temporal loaders by working in float64.
+    # Work in float64: fp16 Gram matrices (X @ X.T over d=2048) lose precision
+    # and risk overflow; this matches the other loaders.
 
-    # ── Selezione fissa degli indici di subsample ───────────────────────────
-    # IMPORTANTE: gli stessi indici per tutti i layer → confronto consistente
+    # Fixed subsample indices reused for every layer -> consistent comparison.
     sub_idx = subsample_indices(n_total=N, n_sub=n_sub, seed=seed)
 
-    # ── Pre-caricamento degli hidden state per tutti i layer ────────────────
-    # Carichiamo prima tutto in memoria (fattibile se n_sub=512 e d≤3072):
-    # 512 × 3072 × 4 bytes ≈ 6 MB per layer × 32 layer ≈ 192 MB totali
-    print(f"Caricamento hidden state per {n_layers} layer "
-          f"(subsample N_sub={n_sub} su N={N})...")
-
-    H_sub_all = []  # lista di array (n_sub, d), uno per layer
+    logger.info(
+        "Loading hidden states for %d layers (subsample N_sub=%d of N=%d)...",
+        n_layers, n_sub, N,
+    )
+    H_sub_all = []  # one (n_sub, d) array per layer
     for l in range(n_layers):
         layer_path = hidden_states_dir / f"layer_{l:02d}.pt"
         H_l = torch.load(layer_path, map_location=device).cpu().numpy().astype(np.float64)  # (N, d)
-        H_sub_all.append(H_l[sub_idx])  # (n_sub, d) — subsample fisso
+        H_sub_all.append(H_l[sub_idx])  # (n_sub, d)
 
-    # ── Calcolo della matrice CKA L×L ───────────────────────────────────────
     cka_matrix = np.zeros((n_layers, n_layers))
 
-    # La matrice è simmetrica: CKA(l1, l2) = CKA(l2, l1)
-    # → calcoliamo solo il triangolo superiore (inclusa diagonale) e specchiamo
+    # Symmetric: compute the upper triangle (incl. diagonal) and mirror.
     total_pairs = n_layers * (n_layers + 1) // 2
-    pbar = tqdm(total=total_pairs, desc="CKA intra-modello")
-
+    pbar = tqdm(total=total_pairs, desc="Intra-model CKA")
     for l1 in range(n_layers):
         for l2 in range(l1, n_layers):
             cka_val = linear_cka(H_sub_all[l1], H_sub_all[l2])
             cka_matrix[l1, l2] = cka_val
-            cka_matrix[l2, l1] = cka_val  # simmetria
+            cka_matrix[l2, l1] = cka_val
             pbar.update(1)
-
     pbar.close()
     return cka_matrix
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# BLOCCO 5 — Uso 2: CKA inter-categoria (RQ1 — biforcazione geometrica)
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Mode 2: inter-category CKA (RQ1 — geometric bifurcation) ─────────────────
 
 def compute_cka_intercategory(
     H_math: np.ndarray,
     H_generic: np.ndarray,
     seed: int | None = None,
 ) -> float:
-    """
-    Calcola CKA tra le rappresentazioni di stimoli matematici e testo generico
-    per un singolo layer.
+    """CKA between math and generic-text representations at a single layer.
 
-    Un valore basso indica che le geometrie delle due categorie sono distanti:
-    il modello le rappresenta come strutturalmente diverse in quel layer.
-    Iterare su tutti i layer produce la curva CKA_inter(l) che identifica l*.
+    A low value means the two categories occupy structurally different
+    geometries at that layer. If the two sets differ in size, a balanced
+    subsample of min(n1, n2) is drawn from each.
 
     Args:
-        H_math    (np.ndarray): Hidden state stimoli matematici, forma (n1, d).
-        H_generic (np.ndarray): Hidden state testo generico,     forma (n2, d).
-                                n1 e n2 possono essere diversi (CKA lo gestisce
-                                tramite la Gram matrix n×n separata per i due set).
-        seed      (int|None):   Seed per il subsampling bilanciato quando n1 ≠ n2.
-                                None → fallback a 42 (retro-compatibile). Il chiamante
-                                deve passare get_seed(...) per integrarsi nel seed
-                                discipline del progetto.
-
+        H_math: math-stimulus hidden states (n1, d).
+        H_generic: generic-text hidden states (n2, d).
+        seed: subsampling seed used when n1 != n2; None falls back to 42.
+            Callers should pass get_seed(...) for the project seed discipline.
     Returns:
-        float: Valore CKA inter-categoria in [0, 1].
-
-    Note:
-        Se n1 ≠ n2, la CKA non è direttamente applicabile nella forma standard
-        (che richiede le stesse n righe). In quel caso si usa un subsample
-        bilanciato: min(n1, n2) campioni da ciascuna categoria.
+        Inter-category CKA value in [0, 1].
     """
     n1, n2 = H_math.shape[0], H_generic.shape[0]
 
     if n1 != n2:
         n_common = min(n1, n2)
-        # Seed esterno per integrare il seed discipline del progetto (get_seed).
-        # Fallback a 42 mantiene il comportamento storico se il chiamante non passa nulla.
         rng = np.random.default_rng(seed if seed is not None else 42)
         idx_math    = rng.choice(n1, size=n_common, replace=False)
         idx_generic = rng.choice(n2, size=n_common, replace=False)
@@ -384,31 +259,28 @@ def compute_cka_intercategory_all_layers(
     device: str = "cpu",
     seed: int = 42,
 ) -> np.ndarray:
-    """
-    Calcola CKA inter-categoria per ogni layer del modello.
+    """Compute inter-category CKA for every layer.
 
-    Produce il vettore CKA_inter(l) per l in {0, ..., L-1}.
-    Un calo brusco a partire da l* indica l'emergenza della biforcazione
-    geometrica tra matematica e linguaggio generico (RQ1).
+    Produces CKA_inter(l); a sharp drop from layer l* marks the math/text
+    geometric bifurcation (RQ1).
 
     Args:
-        hidden_states_dir (Path):         Directory con layer_XX.pt.
-        n_layers          (int):           Numero di layer.
-        math_indices      (np.ndarray):    Indici degli stimoli matematici
-                                           nel tensore degli hidden state.
-        generic_indices   (np.ndarray):    Indici degli stimoli generici.
-        device            (str):           "cpu" o "cuda".
-
+        hidden_states_dir: directory with layer_XX.pt.
+        n_layers: number of layers.
+        math_indices: indices of math stimuli in the hidden-state tensor.
+        generic_indices: indices of generic stimuli.
+        device: "cpu" or "cuda".
+        seed: subsampling seed.
     Returns:
-        np.ndarray: Array di forma (n_layers,) con i valori CKA inter-categoria.
+        Array (n_layers,) of inter-category CKA values.
     """
     cka_intercategory = np.zeros(n_layers)
 
-    for l in tqdm(range(n_layers), desc="CKA inter-categoria per layer"):
+    for l in tqdm(range(n_layers), desc="Inter-category CKA per layer"):
         layer_path = hidden_states_dir / f"layer_{l:02d}.pt"
         H_l = torch.load(layer_path, map_location=device).cpu().numpy().astype(np.float64)  # (N, d)
 
-        H_math    = H_l[math_indices]     # (n_math,    d)
+        H_math    = H_l[math_indices]     # (n_math, d)
         H_generic = H_l[generic_indices]  # (n_generic, d)
 
         cka_intercategory[l] = compute_cka_intercategory(H_math, H_generic, seed=seed)
@@ -416,9 +288,7 @@ def compute_cka_intercategory_all_layers(
     return cka_intercategory
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# BLOCCO 6 — Uso 3: CKA cross-temporale (RQ3 — fine-tuning)
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Mode 3: cross-temporal CKA (RQ3 — fine-tuning) ───────────────────────────
 
 def compute_cka_cross_temporal(
     base_hidden_states_dir: Path,
@@ -428,36 +298,23 @@ def compute_cka_cross_temporal(
     seed: int = 42,
     device: str = "cpu",
 ) -> dict[str, np.ndarray]:
-    """
-    Calcola CKA layer-per-layer tra il modello base e ogni checkpoint QLoRA.
+    """Per-layer CKA between the base model and each QLoRA checkpoint.
 
-    Per ogni checkpoint c e layer l, calcola:
-        S_l^c = CKA(H_l^{base}, H_l^{checkpoint_c})
-
-    Questo produce, per ogni checkpoint, un vettore (n_layers,) che mostra
-    quali layer hanno subito la maggiore ristrutturazione geometrica durante
-    il fine-tuning (RQ3, cfr. Pipeline.md Fase 10 e CKA.md sezione 2B).
-
-    CKA_drift(l, c) = 1 - S_l^c  →  vicino a 0 = layer invariato,
-                                      vicino a 1 = layer fortemente riorganizzato.
+    For each checkpoint c and layer l computes S_l^c = CKA(H_l^base, H_l^c),
+    showing which layers were most reorganized by fine-tuning (RQ3).
 
     Args:
-        base_hidden_states_dir        (Path): Directory hidden state modello base.
-        checkpoint_hidden_states_dirs (dict): Mapping step → Path directory ckpt.
-                                              Es: {"ckpt_500": Path("data/..."),
-                                                   "ckpt_1000": Path("data/...")}
-        n_layers (int):  Numero di layer del modello.
-        n_sub    (int):  Subsample per efficienza computazionale (default 512).
-        seed     (int):  Seed per riproducibilità (default 42).
-        device   (str):  "cpu" o "cuda".
-
+        base_hidden_states_dir: base-model hidden-state directory.
+        checkpoint_hidden_states_dirs: mapping step -> checkpoint directory.
+        n_layers: number of layers.
+        n_sub: subsample size.
+        seed: subsampling seed.
+        device: "cpu" or "cuda".
     Returns:
-        dict[str, np.ndarray]: Mapping step → array (n_layers,) di valori CKA.
-                               La chiave "base" contiene il vettore di ones
-                               (CKA con se stesso = 1.0 per sanity check).
+        Mapping step -> array (n_layers,). The "base" key holds ones
+        (CKA with itself = 1.0, a sanity check).
     """
-    # ── Subsampling fisso: stesso per tutti i checkpoint ────────────────────
-    # Carichiamo il layer 0 del base solo per conoscere N
+    # Fixed subsample, shared across checkpoints. Load layer 0 just to get N.
     H_tmp = torch.load(
         base_hidden_states_dir / "layer_00.pt", map_location=device
     ).numpy()
@@ -466,8 +323,7 @@ def compute_cka_cross_temporal(
 
     sub_idx = subsample_indices(n_total=N, n_sub=n_sub, seed=seed)
 
-    # ── Caricamento hidden state del modello base (subsample) ───────────────
-    print("Caricamento hidden state modello base...")
+    logger.info("Loading base-model hidden states...")
     H_base = []
     for l in range(n_layers):
         H_l = torch.load(
@@ -475,23 +331,19 @@ def compute_cka_cross_temporal(
         ).numpy().astype(np.float64)
         H_base.append(H_l[sub_idx])  # (n_sub, d)
 
-    # ── CKA cross-temporale per ogni checkpoint ──────────────────────────────
     results = {}
-
-    # Sanity check: CKA(base, base) deve essere 1.0 per ogni layer
-    results["base"] = np.ones(n_layers)
+    results["base"] = np.ones(n_layers)  # CKA(base, base) == 1.0 per layer
 
     for ckpt_name, ckpt_dir in checkpoint_hidden_states_dirs.items():
-        print(f"\nCalcolo CKA cross-temporale: base vs {ckpt_name}...")
+        logger.info("Cross-temporal CKA: base vs %s...", ckpt_name)
         cka_values = np.zeros(n_layers)
 
         for l in tqdm(range(n_layers), desc=f"  Layer ({ckpt_name})"):
             H_ckpt_l = torch.load(
                 ckpt_dir / f"layer_{l:02d}.pt", map_location=device
             ).numpy().astype(np.float64)
-            H_ckpt_sub = H_ckpt_l[sub_idx]  # (n_sub, d) — stesso subsample
+            H_ckpt_sub = H_ckpt_l[sub_idx]  # (n_sub, d) — same subsample
 
-            # CKA tra rappresentazioni del base e del checkpoint al layer l
             cka_values[l] = linear_cka(H_base[l], H_ckpt_sub)
 
         results[ckpt_name] = cka_values
@@ -500,63 +352,60 @@ def compute_cka_cross_temporal(
 
 
 def compute_cka_drift(cka_cross_temporal: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
-    """
-    Calcola il CKA drift: drift(l, c) = 1 - CKA(base_l, ckpt_c_l).
+    """CKA drift: drift(l, c) = 1 - CKA(base_l, ckpt_c_l).
 
-    Un drift alto indica forte riorganizzazione geometrica in quel layer.
-    Rappresenta la "distanza" dal modello base nella metrica CKA.
+    High drift means strong geometric reorganization at that layer. The "base"
+    key is skipped (drift = 0).
 
     Args:
-        cka_cross_temporal (dict): Output di compute_cka_cross_temporal().
-
+        cka_cross_temporal: output of compute_cka_cross_temporal().
     Returns:
-        dict[str, np.ndarray]: Mapping ckpt_name → array drift (n_layers,).
-                               La chiave "base" viene saltata (drift = 0).
+        Mapping ckpt_name -> drift array (n_layers,).
     """
     drift_results = {}
     for ckpt_name, cka_values in cka_cross_temporal.items():
         if ckpt_name == "base":
             continue
         drift_results[ckpt_name] = 1.0 - cka_values
-
     return drift_results
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# BLOCCO 7 — Salvataggio e caricamento risultati
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Result persistence ───────────────────────────────────────────────────────
 
 def save_cka_results(
     cka_matrix: np.ndarray,
     output_dir: Path,
     filename_stem: str = "cka_matrix",
 ) -> None:
-    """
-    Salva la matrice CKA sia in formato .npy (per uso programmatico) che
-    in .csv (per leggibilità e ispezione rapida).
-
-    Output (cfr. Pipeline.md Fase 5, Step 4):
-        output_dir/cka_matrix.npy   → array numpy (L, L)
-        output_dir/cka_matrix.csv   → tabella leggibile con header
+    """Save a CKA matrix atomically as .npy (programmatic) and .csv (readable).
 
     Args:
-        cka_matrix   (np.ndarray): Matrice CKA di forma (L, L).
-        output_dir   (Path):       Directory di destinazione (creata se assente).
-        filename_stem (str):       Prefisso del nome file (default: "cka_matrix").
+        cka_matrix: CKA matrix (L, L).
+        output_dir: destination directory (created if absent).
+        filename_stem: output filename prefix.
     """
+    import os
+    import tempfile
+
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Salvataggio .npy (formato binario, accesso rapido)
     npy_path = output_dir / f"{filename_stem}.npy"
-    np.save(npy_path, cka_matrix)
-    print(f"Salvato: {npy_path}")
+    _atomic_save_npy(npy_path, cka_matrix)
+    logger.info("Saved: %s", npy_path)
 
-    # Salvataggio .csv (leggibilità: colonne = layer_00, layer_01, ...)
+    # Atomic CSV write (matrix layout: columns = layer_00, layer_01, ...).
     csv_path = output_dir / f"{filename_stem}.csv"
     n_layers = cka_matrix.shape[0]
     header = ",".join([f"layer_{l:02d}" for l in range(n_layers)])
-    np.savetxt(csv_path, cka_matrix, delimiter=",", header=header, comments="")
-    print(f"Salvato: {csv_path}")
+    fd, tmp = tempfile.mkstemp(dir=output_dir, suffix=".csv")
+    os.close(fd)
+    try:
+        np.savetxt(tmp, cka_matrix, delimiter=",", header=header, comments="")
+        os.replace(tmp, csv_path)
+    except Exception:
+        os.remove(tmp)
+        raise
+    logger.info("Saved: %s", csv_path)
 
 
 __all__ = [
@@ -572,46 +421,34 @@ __all__ = [
 ]
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# BLOCCO 8 — Entry point / esempio d'uso
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Entry point / usage example ──────────────────────────────────────────────
 
 if __name__ == "__main__":
-    """
-    Esempio d'uso della pipeline CKA completa.
+    """Demo of the three CKA modes on the project's on-disk hidden states.
 
-    Struttura attesa dei file su disco (generata dalla Fase 2 della pipeline):
-        data/processed/pythia-1.4b/
-            layer_00.pt     → Tensor (N, 2048), N stimoli, d=2048
-            layer_01.pt
-            ...
-            layer_23.pt
-            metadata.json   → {"stimuli_ids": [...], "categories": [...], ...}
-
-    Categorie dataset v5:
-        CAT-SIGN   — stimoli aritmetici (contrasto sul segno)
-        CAT-PARITY — stimoli aritmetici (contrasto sulla parità)
-        CTRL-NEU   — prosa inglese senza numeri
-        CTRL-NUM   — numeri in contesto non aritmetico
+    Expects data/processed/<model>/layer_XX.pt plus metadata.json (with a
+    "categories" list parallel to the stimuli). The real RQ1 pipeline lives in
+    run_rq1.py; this block is a standalone sanity demo.
     """
     import json
 
     from src.config.categories import MATH_CATS, CTRL_CATS
 
-    # ── Configurazione ───────────────────────────────────────────────────────
-    MODEL_NAME  = "pythia-1.4b"    # modello target della tesi
-    N_LAYERS    = 24               # Pythia-1.4B ha 24 layer transformer
-    N_SUB       = 512              # subsample per CKA (512 stabile e veloce)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+    MODEL_NAME  = "pythia-1.4b"
+    N_LAYERS    = 24
+    N_SUB       = 512
     SEED        = 42
-    DEVICE      = "cpu"            # usa "cuda" se disponibile
+    DEVICE      = "cpu"
 
     BASE_DIR    = Path("data/processed") / MODEL_NAME
     RESULTS_DIR = Path("results")
 
-    # ── Uso 1: Matrice CKA intra-modello L×L ────────────────────────────────
-    print("=" * 60)
-    print("USO 1 — CKA intra-modello (matrice L×L)")
-    print("=" * 60)
+    # Mode 1: intra-model CKA (L×L matrix).
+    logger.info("=" * 60)
+    logger.info("MODE 1 — intra-model CKA (L×L matrix)")
+    logger.info("=" * 60)
 
     cka_matrix = compute_cka_matrix_intramodel(
         hidden_states_dir=BASE_DIR,
@@ -628,31 +465,29 @@ if __name__ == "__main__":
     )
 
     diag_mean = np.diag(cka_matrix).mean()
-    assert abs(diag_mean - 1.0) < 1e-6, f"Sanity check fallito: diag mean = {diag_mean}"
-    print(f"Sanity check OK: diagonale media = {diag_mean:.6f}")
+    assert abs(diag_mean - 1.0) < 1e-6, f"Sanity check failed: diag mean = {diag_mean}"
+    logger.info("Sanity check OK: mean diagonal = %.6f", diag_mean)
 
-    # ── Uso 2: CKA inter-categoria per layer (curva RQ1) ────────────────────
-    print("\n" + "=" * 60)
-    print("USO 2 — CKA inter-categoria (curva per layer, RQ1)")
-    print("=" * 60)
+    # Mode 2: inter-category CKA per layer (RQ1 curve).
+    logger.info("=" * 60)
+    logger.info("MODE 2 — inter-category CKA (per-layer curve, RQ1)")
+    logger.info("=" * 60)
 
-    # metadata["categories"] è una lista parallela a stimuli_ids
-    # con valori "CAT-SIGN" | "CAT-PARITY" | "CTRL-NEU" | "CTRL-NUM"
-    with open(BASE_DIR / "metadata.json", "r") as f:
+    # metadata["categories"] is a list parallel to stimuli_ids, with values
+    # "CAT-SIGN" | "CAT-PARITY" | "CTRL-NEU" | "CTRL-NUM".
+    with open(BASE_DIR / "metadata.json", "r", encoding="utf-8") as f:
         metadata = json.load(f)
 
-    categories = np.array(metadata["categories"])   # plurale — v5
+    categories = np.array(metadata["categories"])
 
-    # Matematica: stimoli con contrasto aritmetico (sign o parity)
-    # Controllo: prosa e numeri in contesto non aritmetico
     math_mask    = np.isin(categories, list(MATH_CATS))
     generic_mask = np.isin(categories, list(CTRL_CATS))
 
     math_indices    = np.where(math_mask)[0]
     generic_indices = np.where(generic_mask)[0]
 
-    print(f"  Stimoli matematici (CAT-SIGN + CAT-PARITY): {len(math_indices)}")
-    print(f"  Stimoli controllo  (CTRL-NEU + CTRL-NUM):   {len(generic_indices)}")
+    logger.info("  Math stimuli (CAT-SIGN + CAT-PARITY): %d", len(math_indices))
+    logger.info("  Control stimuli (CTRL-NEU + CTRL-NUM): %d", len(generic_indices))
 
     cka_inter = compute_cka_intercategory_all_layers(
         hidden_states_dir=BASE_DIR,
@@ -662,27 +497,23 @@ if __name__ == "__main__":
         device=DEVICE,
     )
 
-    np.save(RESULTS_DIR / "cka_intercategory.npy", cka_inter)
-    print("\nCKA inter-categoria per layer:")
+    _atomic_save_npy(RESULTS_DIR / "cka_intercategory.npy", cka_inter)
+    logger.info("Inter-category CKA per layer:")
     for l, val in enumerate(cka_inter):
-        print(f"  Layer {l:02d}: {val:.4f}")
+        logger.info("  Layer %02d: %.4f", l, val)
 
-    # ── Uso 3: CKA cross-temporale (curva RQ3) ───────────────────────────────
-    print("\n" + "=" * 60)
-    print("USO 3 — CKA cross-temporale (base vs checkpoint MetaMath/QLoRA, RQ3)")
-    print("=" * 60)
+    # Mode 3: cross-temporal CKA (RQ3 curve).
+    logger.info("=" * 60)
+    logger.info("MODE 3 — cross-temporal CKA (base vs QLoRA checkpoints, RQ3)")
+    logger.info("=" * 60)
 
-    # Checkpoint generati durante il fine-tuning QLoRA su MetaMath.
-    # Ogni directory contiene i file layer_XX.pt estratti su quel checkpoint
-    # usando lo stesso geometric_eval set (dataset_master_v5.jsonl).
     CKPT_BASE = Path("data/processed/checkpoints")
     checkpoint_dirs = {
-        "ckpt_500":  CKPT_BASE / "ckpt_500",
-        "ckpt_1000": CKPT_BASE / "ckpt_1000",
-        "ckpt_1500": CKPT_BASE / "ckpt_1500",
-        "ckpt_2000": CKPT_BASE / "ckpt_2000",
+        "checkpoint-2500":  CKPT_BASE / "checkpoint-2500",
+        "checkpoint-5000":  CKPT_BASE / "checkpoint-5000",
+        "checkpoint-7500":  CKPT_BASE / "checkpoint-7500",
+        "checkpoint-10000": CKPT_BASE / "checkpoint-10000",
     }
-
     checkpoint_dirs = {k: v for k, v in checkpoint_dirs.items() if v.exists()}
 
     if checkpoint_dirs:
@@ -698,13 +529,12 @@ if __name__ == "__main__":
         cka_drift = compute_cka_drift(cka_temporal)
 
         drift_matrix = np.stack(list(cka_drift.values()))  # (n_ckpt, n_layers)
-        np.save(RESULTS_DIR / "cka_drift_temporal.npy", drift_matrix)
+        _atomic_save_npy(RESULTS_DIR / "cka_drift_temporal.npy", drift_matrix)
 
-        print("\nCKA drift (per checkpoint, layer con drift massimo):")
+        logger.info("CKA drift (per checkpoint, layer of maximum drift):")
         for ckpt_name, drift in cka_drift.items():
             l_max = np.argmax(drift)
-            print(f"  {ckpt_name}: drift massimo al layer {l_max:02d} "
-                  f"(drift = {drift[l_max]:.4f})")
+            logger.info("  %s: max drift at layer %02d (drift = %.4f)",
+                        ckpt_name, l_max, drift[l_max])
     else:
-        print("  Nessun checkpoint trovato su disco — skip Uso 3.")
-        print("  Avvia prima il fine-tuning QLoRA con MetaMath (Pipeline.md, Fase 9).")
+        logger.info("  No checkpoints found on disk — skipping Mode 3.")

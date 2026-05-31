@@ -1,17 +1,16 @@
 """
-checkpoint_loop.py — Hardware orchestration for RQ3 dynamic evaluation.
+checkpoint_loop.py — driver for RQ3 dynamic evaluation.
 Iterates over saved LoRA checkpoints, merges weights, wraps in TransformerLens,
 extracts representations, and triggers the static probing validation.
 
-Enforces fixes CL-01 to CL-07: process final_adapter, handle execution timeouts,
-reuse base model allocations via deepcopy, and eliminate hardcoded environments.
+Processes the terminal adapter, bounds the per-checkpoint subprocess with a
+timeout, reuses the base model via deepcopy, and reads paths from the config.
 """
 
 import argparse
 import copy
 import gc
 import logging
-import os
 import subprocess
 import sys
 import yaml
@@ -20,7 +19,7 @@ from pathlib import Path
 import torch
 import transformers
 
-# ENV-02: Protect against GPT-NeoX vmap/SDPA bug in newer transformers
+# Guard against the GPT-NeoX vmap/SDPA bug in newer transformers.
 assert transformers.__version__ < "4.49", (
     f"transformers {transformers.__version__} has a vmap/SDPA bug with GPT-NeoX. "
     "Pin to <4.49: pip install 'transformers>=4.46,<4.49'"
@@ -49,20 +48,20 @@ def process_checkpoint(
     checkpoints_extracted_dir: Path,
     logger: logging.Logger
 ) -> None:
-    """Merges LoRA adapter, extracts states, and triggers RQ3 metric computation."""
-    logger.info(f"Processing checkpoint execution target: {ckpt_dir.name}")
+    """Merge the LoRA adapter, extract states, and trigger RQ3 metric computation."""
+    logger.info(f"Processing checkpoint: {ckpt_dir.name}")
 
-    # CL-03: Clone pre-loaded baseline to evade continuous slow disk I/O reloads
-    logger.info("Cloning in-memory baseline model structures...")
+    # Clone the preloaded base model to avoid reloading from disk each time.
+    logger.info("Cloning in-memory base model...")
     base_hf_copy = copy.deepcopy(base_hf)
 
-    # 2. Merge LoRA Weights
-    logger.info("Merging LoRA weights (in-memory alignment)...")
+    # 2. Merge LoRA weights.
+    logger.info("Merging LoRA weights (in memory)...")
     peft_model = PeftModel.from_pretrained(base_hf_copy, str(ckpt_dir))
     merged_hf = peft_model.merge_and_unload()
 
-    # 3. Wrap in HookedTransformer
-    logger.info("Wrapping unified checkpoints inside HookedTransformer...")
+    # 3. Wrap in HookedTransformer.
+    logger.info("Wrapping merged model in HookedTransformer...")
     hooked_model = HookedTransformer.from_pretrained(
         base_model_id,
         hf_model=merged_hf,
@@ -71,14 +70,14 @@ def process_checkpoint(
         fold_ln=True
     )
 
-    # 4. Extract Hidden States (CL-04 Configurable target routing)
+    # 4. Extract hidden states.
     out_dir = checkpoints_extracted_dir / ckpt_dir.name
-    logger.info(f"Extracting activation vectors to {out_dir} (Batch Footprint: {extract_batch_size})...")
+    logger.info(f"Extracting activations to {out_dir} (batch size {extract_batch_size})...")
 
-    # CL-06 / E-01: Attention mask is automatically computed and packaged internally by this call
+    # The attention mask is computed internally by this call.
     extract_from_model(hooked_model, stimuli, out_dir, batch_size=extract_batch_size)
 
-    # Flush registers to prevent cross-checkpoint VRAM spikes
+    # Free VRAM before the next checkpoint.
     del hooked_model
     del merged_hf
     del peft_model
@@ -86,9 +85,9 @@ def process_checkpoint(
     torch.cuda.empty_cache()
     gc.collect()
 
-    # 5. Execute RQ3 Orchestrator via Subprocess
-    logger.info("Triggering run_rq3.py evaluation loop...")
-    # CL-07: Use sys.executable to maintain environment context isolation inside conda/venvs
+    # 5. Run RQ3 in a subprocess.
+    logger.info("Triggering run_rq3.py evaluation...")
+    # Use sys.executable to stay inside the active conda/venv.
     cmd = [
         sys.executable,
         "run_rq3.py",
@@ -97,22 +96,21 @@ def process_checkpoint(
     ]
 
     try:
-        # CL-02: Bound process allocations to prevent indefinite system locks
+        # Bound the subprocess to avoid an indefinite hang.
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
         if result.returncode != 0:
             logger.error(f"run_rq3.py failed for {ckpt_dir.name}:\n{result.stderr}")
         else:
             logger.info(f"Evaluation complete for {ckpt_dir.name}.")
     except subprocess.TimeoutExpired:
-        logger.error(f"Fatal: Evaluation execution timeout reached for {ckpt_dir.name}. Skipping block.")
+        logger.error(f"Evaluation timed out for {ckpt_dir.name}. Skipping.")
 
 
 def main() -> None:
     logger = setup_logger()
 
-    # CL-05: Enforce strict config-driven CLI ingestion arguments parsing
-    parser = argparse.ArgumentParser(description="Hardware Checkpoints Evaluation Engine")
-    parser.add_argument("--config", required=True, type=str, help="Path to production configuration YAML file.")
+    parser = argparse.ArgumentParser(description="Checkpoint evaluation loop (RQ3)")
+    parser.add_argument("--config", required=True, type=str, help="Path to the configuration YAML file.")
     args = parser.parse_args()
 
     config_path = Path(args.config)
@@ -127,7 +125,7 @@ def main() -> None:
     base_model_id = profile["hf_path"]
     extract_batch_size = profile["extract_batch_size"]
 
-    # CL-04: Read extraction target routes from active configuration payload
+    # Read extraction output path from the config.
     checkpoints_extracted_base = Path(cfg.get("checkpoints_extracted_dir", "data/processed/checkpoints_extracted"))
 
     stimuli_path = Path("data/processed/dataset_master_v5.jsonl")
@@ -137,29 +135,29 @@ def main() -> None:
 
     checkpoints_base = Path("data/processed/checkpoints")
 
-    # Extract standard sequential checkpoint iterations
+    # Standard sequential checkpoints, ordered by step.
     checkpoints = sorted(
         [d for d in checkpoints_base.iterdir() if d.is_dir() and "checkpoint" in d.name],
         key=lambda x: int(x.name.split("-")[-1]) if "-" in x.name else 0
     )
 
-    # CL-01: Detect terminal LoRA adapter under either canonical name.
+    # Detect the terminal LoRA adapter under either canonical name.
     # Older runs used "final_checkpoint/"; current train_qlora.py emits "final_adapter/".
     for terminal_name in ("final_adapter", "final_checkpoint"):
         terminal_path = checkpoints_base / terminal_name
         if terminal_path.exists():
-            logger.info(f"Located unmerged terminal adapter at '{terminal_name}'. Appending to pipeline targets.")
+            logger.info(f"Located terminal adapter at '{terminal_name}'. Appending to targets.")
             checkpoints.append(terminal_path)
             break  # only the first match
 
     if not checkpoints:
-        logger.warning(f"No valid adapter modules detected inside target base route: {checkpoints_base}")
+        logger.warning(f"No adapters found under: {checkpoints_base}")
         return
 
-    logger.info(f"Allocated {len(checkpoints)} target checkpoints for system execution mapping.")
+    logger.info(f"Found {len(checkpoints)} target checkpoints.")
 
-    # CL-03: Pre-load foundational model footprint once to isolate RAM footprints
-    logger.info(f"Pre-loading core uncompressed base model model ({base_model_id}) to RAM storage...")
+    # Preload the base model once to avoid per-checkpoint disk reloads.
+    logger.info(f"Preloading base model ({base_model_id}) to RAM...")
     base_hf = AutoModelForCausalLM.from_pretrained(
         base_model_id,
         torch_dtype=torch.float16,
@@ -178,7 +176,7 @@ def main() -> None:
             logger=logger
         )
 
-    logger.info("Dynamic checkpoints extraction sequence executed successfully.")
+    logger.info("Dynamic checkpoint extraction sequence completed.")
 
 
 if __name__ == "__main__":

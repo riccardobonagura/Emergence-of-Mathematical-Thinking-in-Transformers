@@ -1,9 +1,9 @@
 """
-extract_states.py — Activation extraction engine layers.
-Intercepts residual stream points at the final token position without hoarding memory.
+extract_states.py — activation extraction.
+Captures the residual stream at the final token position, streaming to disk.
 
-FIX E-01: Uses model.run_with_hooks with explicit attention_mask forwarding.
-HARDENED: Restores ExtractionMetadata TypedDict (ARCH-03) and restricts operator verification.
+Uses model.run_with_hooks with explicit attention_mask forwarding, and the
+ExtractionMetadata TypedDict (ARCH-03).
 
 Last-token gather: to_tokens right-pads and pad_id == BOS == eos == 0 for Pythia,
 so the terminal token is located by scanning non-pad positions from the right
@@ -197,7 +197,7 @@ def main() -> None:
 
     from src.config.models import get_model_profile
 
-    # ENV-02: GPT-NeoX vmap/SDPA bug in transformers >= 4.49
+    # Guard against the GPT-NeoX vmap/SDPA bug in transformers >= 4.49.
     assert transformers.__version__ < "4.49", (
         f"transformers {transformers.__version__} has a vmap/SDPA bug with GPT-NeoX. "
         "Pin to <4.49: pip install 'transformers>=4.46,<4.49'"
