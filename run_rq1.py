@@ -51,21 +51,45 @@ def _bootstrap_inter_cka(
     n_boot: int,
     base_seed: int,
     layer: int,
+    subsample_frac: float,
 ) -> tuple[float, float, float]:
-    """Inter-category CKA as a bootstrap-with-replacement mean + percentile 95% CI.
+    """Inter-category CKA point estimate + WITHOUT-replacement subsampling 95% CI.
 
-    Resamples the (already balanced) math/ctrl row sets independently each iteration
-    and recomputes CKA, turning the former single-seed point estimate into a real
-    mean with stimulus-level uncertainty (E-M-02). Seeds come only from get_seed.
+    The first return slot is a single CLEAN point estimate on the full balanced
+    math/ctrl sets — NOT a resample average. The CI is a bias-corrected SUBSAMPLING
+    CI, not a classical bootstrap.
+
+    Why subsampling without replacement and not a with-replacement bootstrap: linear
+    CKA is computed on Gram matrices XXᵀ. Resampling rows WITH replacement duplicates
+    rows, which inflates the Gram diagonal and deflates the centered-HSIC ratio,
+    collapsing the estimate toward zero in the near-zero CKA regime of real data (the
+    old code reported 0.005-0.012 against a true ~0.10). We therefore draw DISTINCT
+    rows — floor(frac*n) per side, replace=False — so the no-duplicate structure CKA
+    assumes is preserved; the spread across draws is the uncertainty band.
+
+    Why the band is bias-corrected: smaller n inflates linear CKA (finite-sample
+    positive bias; Kornblith et al. 2019), so the subsample cloud sits systematically
+    ABOVE the full-n point and a raw-percentile band would not contain it. We recenter
+    the band by the subsample-vs-point offset (bias = submean − point), reporting the
+    2.5/97.5 percentiles shifted onto the point. The width is the subsampling spread;
+    the location is pinned to the unbiased-er full-n estimate, so the interval brackets
+    the point by construction. Seeds come only from get_seed.
     """
+    point = compute_cka_intercategory(H_math, H_ctrl, seed=base_seed)
     n_m, n_c = H_math.shape[0], H_ctrl.shape[0]
+    k_m, k_c = int(np.floor(subsample_frac * n_m)), int(np.floor(subsample_frac * n_c))
     vals = np.empty(n_boot, dtype=np.float64)
     for b in range(n_boot):
         rng = np.random.default_rng(get_seed(base_seed, "cka_inter_boot", layer * 1000 + b))
-        idx_m = rng.integers(0, n_m, size=n_m)
-        idx_c = rng.integers(0, n_c, size=n_c)
+        idx_m = rng.choice(n_m, size=k_m, replace=False)
+        idx_c = rng.choice(n_c, size=k_c, replace=False)
         vals[b] = compute_cka_intercategory(H_math[idx_m], H_ctrl[idx_c], seed=base_seed)
-    return float(vals.mean()), float(np.percentile(vals, 2.5)), float(np.percentile(vals, 97.5))
+
+    # Recenter the subsampling spread onto the full-n point to remove finite-sample bias.
+    bias = float(vals.mean()) - float(point)
+    ci_low = float(np.percentile(vals, 2.5)) - bias
+    ci_high = float(np.percentile(vals, 97.5)) - bias
+    return float(point), ci_low, ci_high
 
 
 def main() -> None:
@@ -86,6 +110,7 @@ def main() -> None:
     # Derive operational directories and seeds from configuration file keys
     global_seed = int(config["seed"])
     cka_inter_boot_n = int(config.get("cka_inter_bootstrap_n", 50))
+    cka_inter_subsample_frac = float(config.get("cka_inter_subsample_frac", 0.8))
     iso_floor_boot_n = int(config.get("iso_floor_bootstrap_n", 1000))
     PROC_DIR = Path("data/processed") / config["model_name"]
     STIMULI_PATH = Path("data/processed/dataset_master_v5.jsonl")
@@ -215,11 +240,12 @@ def main() -> None:
     assert abs(base_self_cka_math - 1.0) < 1e-6, f"Self-CKA identity violation on math space: {base_self_cka_math}"
     assert abs(base_self_cka_ctrl - 1.0) < 1e-6, f"Self-CKA identity violation on control space: {base_self_cka_ctrl}"
 
-    # Inter-category CKA at layer 0 — bootstrap mean + percentile 95% CI over the
-    # balanced math/ctrl sets (E-M-02). The post-hoc Z-score baseline test on the
-    # evolutionary ΔCKA (lines below) remains a separate secondary check.
+    # Inter-category CKA at layer 0 — clean point estimate + without-replacement
+    # subsampling 95% CI over the balanced math/ctrl sets (E-M-02). The post-hoc
+    # Z-score baseline test on the evolutionary ΔCKA (lines below) remains a separate
+    # secondary check.
     cka_inter_mean_0, cka_inter_lo_0, cka_inter_hi_0 = _bootstrap_inter_cka(
-        H_prev_math, H_prev_ctrl, cka_inter_boot_n, global_seed, 0
+        H_prev_math, H_prev_ctrl, cka_inter_boot_n, global_seed, 0, cka_inter_subsample_frac
     )
 
     cka_ctrl_bl_0 = compute_cka_intercategory(
@@ -260,9 +286,10 @@ def main() -> None:
         delta_cka = cka_c - cka_m
         cka_deltas.append(delta_cka)
 
-        # Inter-category CKA per layer — bootstrap mean + percentile 95% CI.
+        # Inter-category CKA per layer — clean point estimate + without-replacement
+        # subsampling 95% CI.
         cka_inter_mean, cka_inter_lo, cka_inter_hi = _bootstrap_inter_cka(
-            H_curr_math, H_curr_ctrl, cka_inter_boot_n, global_seed, l
+            H_curr_math, H_curr_ctrl, cka_inter_boot_n, global_seed, l, cka_inter_subsample_frac
         )
 
         cka_ctrl_bl = compute_cka_intercategory(
@@ -320,9 +347,14 @@ def main() -> None:
     # is the rigorous fourth leg but costs L×N_perm CKA evals — it is FUTURE WORK and
     # deliberately not implemented here.
 
-    # (c1) Matched-baseline comparison from the assembled columns. A genuine
-    # content divergence sits BELOW the control↔control baseline; NaN baseline
-    # (no CTRL-NEU/CTRL-NUM split) compares False, which is the safe null.
+    # (c1) Matched-baseline comparison from the assembled columns. This is now a
+    # like-for-like comparison: BOTH sides are single-shot CKA point estimates on
+    # balanced sets — cka_inter_mean is the clean point estimate from
+    # _bootstrap_inter_cka (post Fix A, no longer a duplication-deflated resample
+    # average), and cka_ctrl_neu_vs_num is one clean compute_cka_intercategory call.
+    # A genuine content divergence sits BELOW the control↔control baseline. When the
+    # baseline is NaN (no CTRL-NEU/CTRL-NUM split), the `<` comparison evaluates to
+    # False by design — the intentional safe null, never a spurious "diverges".
     df_cka["delta_vs_ctrl_baseline"] = df_cka["cka_inter_mean"] - df_cka["cka_ctrl_neu_vs_num"]
     df_cka["divergence_exceeds_baseline"] = df_cka["cka_inter_mean"] < df_cka["cka_ctrl_neu_vs_num"]
 

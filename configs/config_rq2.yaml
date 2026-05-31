@@ -29,3 +29,9 @@ output_dir: results/rq2_probing
 figures_dir: "results/figures/rq2_probing"
 eval_subset_size: 200
 total_training_steps: 12343
+
+# ── RQ1 geometry (run_rq1.py) ─────────────────────────────────────────────────
+# iso_floor_bootstrap_n: clouds for the random-Gaussian isotropy floor (E-G-01).
+# At d=2048 the floor is pinned near zero with ~6e-5 CI width, so 200 is already
+# wildly oversampled vs 1000 — identical defensible result, step-1 runtime ~32→~9 min.
+iso_floor_bootstrap_n: 200

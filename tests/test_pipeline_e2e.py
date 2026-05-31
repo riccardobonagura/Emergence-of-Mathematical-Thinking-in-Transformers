@@ -207,11 +207,37 @@ def test_rq1_pipeline(mock_iso, mock_load, mock_pipeline_env, monkeypatch) -> No
     assert required_cols.issubset(df.columns), f"Metrics table schema mismatch. Missing: {required_cols - set(df.columns)}"
     assert len(df) == 24, "Layer indices mismatch inside the output metrics table rows."
 
-    # Task D: cka_inter_mean is now a bootstrap mean bracketed by its percentile CI.
+    # Fix A: cka_inter_mean is the CLEAN full-n point estimate (NOT a duplication-
+    # biased resample average), bracketed by a bias-corrected subsampling CI.
     ci_cols = {"cka_inter_ci_low", "cka_inter_ci_high"}
     assert ci_cols.issubset(df.columns), f"Missing inter-category CI columns: {ci_cols - set(df.columns)}"
-    assert (df["cka_inter_ci_low"] <= df["cka_inter_mean"] + 1e-9).all(), "ci_low above mean."
-    assert (df["cka_inter_mean"] <= df["cka_inter_ci_high"] + 1e-9).all(), "mean above ci_high."
+
+    # Contract pin: the mean slot IS the single-shot point estimate. Reproduce the
+    # balanced point exactly as run_rq1 does (same subsampling seed, same CKA seed)
+    # and confirm the persisted mean equals it within rounding tolerance. The mock
+    # feeds the SAME tensor at every layer, so the point is identical across rows —
+    # any return to a resample-average would break this equality.
+    from src.metrics.cka import compute_cka_intercategory
+    from src.probing.seeds import get_seed
+
+    cats = np.array(json.load(open(env["proc_dir"] / "metadata.json"))["categories"])
+    m_raw = np.where(np.isin(cats, list(MATH_CATS)))[0]
+    c_raw = np.where(np.isin(cats, list(CTRL_CATS)))[0]
+    n_sub = min(m_raw.size, c_raw.size)
+    rng_sub = np.random.default_rng(get_seed(42, "rq1_subsampling", 0))
+    m_idx = np.sort(rng_sub.choice(m_raw, size=n_sub, replace=False))
+    c_idx = np.sort(rng_sub.choice(c_raw, size=n_sub, replace=False))
+    H64 = fake_tensor.astype(np.float64)  # run_rq1 casts to float64 before CKA
+    point = compute_cka_intercategory(H64[m_idx], H64[c_idx], seed=42)
+    assert np.allclose(df["cka_inter_mean"].to_numpy(), round(point, 6), atol=2e-6), \
+        "cka_inter_mean must equal the clean point estimate (Fix A: no duplication-biased average)."
+
+    # Bias-corrected band brackets the point by construction; assert the PROPERTY, not
+    # tight bounds (the rank-deficient d=64 mock has a wide finite-sample CKA bias).
+    # Rounding to 6dp can nudge an equal bound by <=1e-6, so allow that slack.
+    assert (df["cka_inter_ci_low"] <= df["cka_inter_mean"] + 1e-6).all(), "ci_low above mean post-correction."
+    assert (df["cka_inter_mean"] <= df["cka_inter_ci_high"] + 1e-6).all(), "mean above ci_high post-correction."
+    assert (df["cka_inter_ci_high"] > df["cka_inter_ci_low"]).all(), "CI must be non-degenerate (ci_high > ci_low)."
 
     # Task C: matched-baseline + robustness battery columns.
     battery_cols = {
