@@ -394,7 +394,8 @@ def test_rq4_pipeline(mock_pipeline_env, monkeypatch) -> None:
     df = pd.read_csv(csv_path)
 
     expected_cols = {"step", "category", "n_rows", "n_single_token", "entropy_mean",
-                     "margin_mean", "p_first_token_mean", "p_correct_single",
+                     "margin_mean", "entropy_mean_single", "margin_mean_single",
+                     "p_first_token_mean", "p_correct_single",
                      "p_correct_single_ci_lo", "p_correct_single_ci_hi"}
     assert expected_cols.issubset(df.columns), f"Missing cols: {expected_cols - set(df.columns)}"
 
@@ -548,6 +549,35 @@ def test_rq4_extract_eq_logits() -> None:
     # Row 0 gathered at t=2 → 100*0 + 10*2 + k; row 1 at t=3 → 100*1 + 10*3 + k.
     np.testing.assert_allclose(out[0], 20 + np.arange(10))
     np.testing.assert_allclose(out[1], 130 + np.arange(10))
+
+
+# ── RQ4: SINGLE-TOKEN-RESTRICTED ENTROPY / MARGIN ─────────────────────────────
+def test_rq4_single_restricted_metrics() -> None:
+    """*_single reflect only the masked subset, distinct from full-population means."""
+    from run_rq4 import aggregate_step
+
+    n, vocab = 10, 20
+    logits = np.zeros((n, vocab), dtype=np.float32)        # default: uniform rows
+    single_mask = np.zeros(n, dtype=bool)
+    single_mask[:5] = True                                  # first 5 are single-token
+    target_ids = np.zeros(n, dtype=np.int64)
+    # Make the single rows one-hot at their target → entropy≈0, large margin, P=1.
+    for i in range(5):
+        logits[i] = -1e4
+        logits[i, 3] = 1e4
+        target_ids[i] = 3
+    categories = np.array(["CAT-SIGN"] * n)
+
+    row = aggregate_step(0, logits, categories, target_ids, single_mask)[0]
+
+    assert row["n_rows"] == 10 and row["n_single_token"] == 5
+    # Single subset: one-hot → ~0 entropy, large margin, P≈1.
+    assert row["entropy_mean_single"] < 1e-2
+    assert row["margin_mean_single"] > 1e3
+    assert row["p_correct_single"] > 0.99
+    # Full population mixes 5 uniform rows → strictly higher entropy / lower margin.
+    assert row["entropy_mean"] > row["entropy_mean_single"] + 1.0
+    assert row["margin_mean"] < row["margin_mean_single"]
 
 
 # ── M-01: ISOTROPY SIGN-CONVENTION INVARIANT ──────────────────────────────────

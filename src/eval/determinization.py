@@ -30,8 +30,10 @@ class RQ4DeterminizationRow(TypedDict):
     """Per-(step, category) row in determinization.csv. Aggregated over examples.
 
     entropy_mean / margin_mean / p_first_token_mean are over ALL rows in the category;
-    p_correct_single (+ Wald CI) is over the single-token-result subset only, where the
-    correct answer is exactly one token so P(first token) == P(full answer).
+    the *_single fields (entropy/margin/p_correct + Wald CI) are over the single-token-
+    result subset only, where the correct answer is exactly one token so P(first token)
+    == P(full answer). The subset isolates CAT-SIGN's positive (digit-answer) half from
+    its negative half, whose first token is the sign " -", not a digit.
     """
     step: int
     category: str
@@ -39,6 +41,8 @@ class RQ4DeterminizationRow(TypedDict):
     n_single_token: int
     entropy_mean: float
     margin_mean: float
+    entropy_mean_single: float
+    margin_mean_single: float
     p_first_token_mean: float
     p_correct_single: float
     p_correct_single_ci_lo: float

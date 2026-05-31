@@ -129,6 +129,12 @@ def aggregate_step(
         p_correct = float(p_first[single_in_cat].mean()) if n_single > 0 else 0.0
         ci_lo, ci_hi = calculate_binomial_ci(p_correct, n_single)
 
+        # Entropy/margin over the single-token subset only — for CAT-SIGN this drops the
+        # negative half (whose first token is the sign " -") and reads the digit-answer
+        # sharpening apart from it.
+        entropy_single = float(entropy[single_in_cat].mean()) if n_single > 0 else 0.0
+        margin_single = float(margin[single_in_cat].mean()) if n_single > 0 else 0.0
+
         rows.append({
             "step": step,
             "category": cat,
@@ -136,6 +142,8 @@ def aggregate_step(
             "n_single_token": n_single,
             "entropy_mean": round(float(entropy[cat_mask].mean()), 6),
             "margin_mean": round(float(margin[cat_mask].mean()), 6),
+            "entropy_mean_single": round(entropy_single, 6),
+            "margin_mean_single": round(margin_single, 6),
             "p_first_token_mean": round(float(p_first[cat_mask].mean()), 6),
             "p_correct_single": round(p_correct, 6),
             "p_correct_single_ci_lo": round(float(ci_lo), 6),
