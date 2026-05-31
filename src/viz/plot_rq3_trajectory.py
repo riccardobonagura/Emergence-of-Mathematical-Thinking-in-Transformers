@@ -127,8 +127,11 @@ def main() -> None:
             z=heatmap_pivot.values,
             x=heatmap_pivot.columns,
             y=heatmap_pivot.index,
-            colorscale='RdBu_r',
-            zmid=0,
+            # geom_delta_math is a non-negative Frobenius magnitude: a sequential
+            # scale anchored at 0 uses the full range (a 0-centered diverging map
+            # would waste half of it).
+            colorscale='Inferno',
+            zmin=0,
             colorbar=dict(title="Drift", x=1.00, y=0.75, len=0.45),
             hovertemplate="Step: %{x}<br>Layer: %{y}<br>Drift: %{z:.4f}<extra></extra>"
         ),
