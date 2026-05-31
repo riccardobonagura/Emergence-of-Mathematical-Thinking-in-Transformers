@@ -173,6 +173,7 @@ def main() -> None:
         hf_nf4 = AutoModelForCausalLM.from_pretrained(
             base_model_id,
             quantization_config=bnb_cfg,
+            torch_dtype=torch.bfloat16,
             device_map="cuda",
             attn_implementation=model_profile.get("attn_implementation", "eager")
         )

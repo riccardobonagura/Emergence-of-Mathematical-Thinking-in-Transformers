@@ -34,10 +34,10 @@
 
 |ID|Principio|Fonte|Regola|Segnale di violazione|
 |---|---|---|---|---|
-|**E-M-01**|**Baseline comparison**|Standard ML evaluation|Ogni metrica deve essere confrontata con almeno: (a) random baseline, (b) majority class baseline, (c) risultati pubblicati su task comparabile|Accuracy 1.0 su sign — è confrontata con majority baseline? Con risultati di Quirke & Barez?|
+|**E-M-01**|**Baseline comparison**|Standard ML evaluation|Ogni metrica deve essere confrontata con almeno: (a) random baseline, (b) majority class baseline, (c) risultati pubblicati su task comparabile|Accuracy alta su sign senza confronto con majority baseline o con risultati di Quirke & Barez|
 |**E-M-02**|**Statistical significance**|Cohen (1988); permutation testing standard|I risultati devono riportare CI e p-value. Per probing: permutation test con label shuffle è il gold standard|Accuracy senza CI è un numero vuoto — abbiamo bootstrap CI ma è documentato il p-value?|
 |**E-M-03**|**Effect size over significance**|Cohen (1988); Wasserstein et al. (2019)|Riportare magnitude dell'effetto, non solo se è significativo. Un'accuracy di 0.52 con p<0.05 è irrilevante.|Peak accuracy senza discussione della differenza rispetto al baseline random|
-|**E-M-04**|**Probe selectivity**|Hewitt & Liang (2019) §3|Una sonda dovrebbe avere accuracy alta sul task target e bassa su control tasks. Senza control task la sonda potrebbe memorizzare artefatti del dataset.|Sign probe accuracy = 1.0 al layer 0 — questo è plausibile o è un artefatto?|
+|**E-M-04**|**Probe selectivity**|Hewitt & Liang (2019) §3|Una sonda dovrebbe avere accuracy alta sul task target e bassa su control tasks. Senza control task la sonda potrebbe memorizzare artefatti del dataset.|Sign probe con accuracy molto alta già al layer di embedding — plausibile o artefatto del token di input?|
 |**E-M-05**|**Multiple comparison correction**|Benjamini & Hochberg (1995)|Se si testa la stessa ipotesi su 24 layer, il p-value threshold va corretto (Bonferroni o FDR)|24 layer × 2 properties = 48 test — correction applicata?|
 
 ---
@@ -58,7 +58,7 @@
 |ID|Principio|Fonte|Regola|Segnale di violazione|
 |---|---|---|---|---|
 |**E-G-01**|**Isotropy interpretation**|Ethayarajh (2019); Mu & Viswanath (2018)|Anisotropia ≠ struttura semantica ricca. Anisotropia può derivare da distribuzione sbilanciata dei token nel corpus di training. La ΔIso deve essere interpretata come differenza relativa tra categorie, non come misura assoluta.|Claims tipo "le rappresentazioni matematiche sono più strutturate perché più anisotrope" senza qualifier|
-|**E-G-02**|**CKA interpretation**|Kornblith et al. (2019) §4; Nguyen et al. (2021)|CKA misura similarity tra rappresentazioni, non qualità. CKA = 0.919 al layer 23 tra math e ctrl non significa "divergenza" — significa che math e ctrl hanno rappresentazioni simili al 91.9%. La divergenza di 0.07 rispetto al layer precedente deve essere messa in scala con varianza attesa.|CKA 0.919 descritto come "divergenza significativa" senza confronto con varianza baseline|
+|**E-G-02**|**CKA interpretation**|Kornblith et al. (2019) §4; Nguyen et al. (2021)|CKA misura similarity tra rappresentazioni, non qualità. Una CKA alta tra math e ctrl agli ultimi layer non significa "divergenza" — significa rappresentazioni simili. Ogni delta di CKA tra layer adiacenti va messo in scala con la varianza attesa.|Una CKA alta descritta come "divergenza significativa" senza confronto con varianza baseline|
 |**E-G-03**|**Emergence layer definition**|Lindsey et al. (2024) §2; Olsson et al. (2022)|"Layer di emergenza" è un termine della letteratura con definizioni diverse. La nostra definizione (primo layer con accuracy > 0.7) deve essere esplicitata e confrontata con definizioni alternative.|Emergence layer usato senza citare la definizione operativa|
 |**E-G-04**|**Geometric change ≠ capability change**|RQ3 limitation (documentato)|Il drift Frobenius misura cambiamento dei pesi, non cambiamento delle capacità. Correlazione tra drift geometrico e Δ GSM8K richiede cautela — terze variabili confondenti (es. distribuzione MetaMath vs GSM8K).|Qualsiasi causal language tra drift e performance|
 
@@ -69,7 +69,7 @@
 |ID|Principio|Fonte|Regola|Segnale di violazione|
 |---|---|---|---|---|
 |**E-F-01**|**Few-shot consistency**|Brown et al. (2020) GPT-3 §3; GSM8K paper (Cobbe et al. 2021)|GSM8K è tipicamente valutato 5-shot in letteratura. Noi usiamo 0-shot. Questo abbassa i numeri sistematicamente — va dichiarato esplicitamente con stima dell'impatto (tipicamente 5-15% di differenza).|Confronto risultati con letteratura GSM8K senza dichiarare 0-shot vs 5-shot|
-|**E-F-02**|**Epoch sufficiency**|Training dynamics literature|1 epoch su MetaMath ~395k esempi a batch effettivo 32 = ~12k steps. Per un modello da 1.4B con 3.1M parametri trainable questo è insufficiente per saturare la convergenza. Il training loss finale (2.56) va confrontato con training loss di modelli simili in letteratura.|Training loss 2.56 dichiarato come buon risultato senza reference|
+|**E-F-02**|**Epoch sufficiency**|Training dynamics literature|1 epoch su MetaMath a batch effettivo 32 (per_device 8 × grad_accum 4) ≈ 12k steps. Per un modello da 1.4B con ~3.1M parametri trainable (LoRA r=16, QKV-only) questo può essere insufficiente per saturare la convergenza. Il training loss finale va confrontato con training loss di modelli simili in letteratura.|Training loss finale dichiarato come buon risultato senza reference|
 |**E-F-03**|**Quantization transparency**|Dettmers et al. (2023) QLoRA paper §4|NF4 introduce degradazione sistematica rispetto a FP16. T16 (nf4_degradation.py) misura questa degradazione — i risultati di T16 devono essere citati quando si riportano risultati RQ3.|Risultati RQ3 senza disclosure del NF4 baseline degradation|
 
 ---
@@ -91,7 +91,7 @@ _Per ogni paper: claim specifico rilevante alla nostra metodologia + implicazion
 |Cobbe et al. (2021) _Training verifiers to solve math word problems_ (GSM8K)|Baseline GPT-3 (175B) 5-shot = 58.1%. Modelli <2B: << 10% 5-shot|Il nostro 0-shot è atteso vicino a 0% per un base model — baseline 0.0 è corretto e atteso|
 |Dettmers et al. (2023) QLoRA|NF4 con r=16 su modelli ~1-7B: degradazione Frobenius relativa tipicamente < 3%|T16 deve confermare questo — se > 5% la degradazione confonde RQ3|
 |Pimentel et al. (2020) _Information-theoretic probing_|Probing come information theory: MDL (minimum description length) è più robusto di accuracy|Non implementato — limitazione da documentare|
-|Tenney et al. (2019) _BERT rediscovers the classical NLP pipeline_|Proprietà linguistiche diverse emergono a layer diversi in modo consistente|Pattern compatibile con nostra RQ2 — sign al layer 3, parity al layer 13-14|
+|Tenney et al. (2019) _BERT rediscovers the classical NLP pipeline_|Proprietà linguistiche diverse emergono a layer diversi in modo consistente|Pattern compatibile con la metodologia RQ2 — proprietà diverse decodificabili a profondità diverse (sign nei layer iniziali, parity nei layer intermedi)|
 |Olsson et al. (2022) _In-context learning and induction heads_|Mechanistic interpretability mostra che componenti specifici (induction heads) mediano comportamenti specifici|Il nostro approccio è correlativo, non mechanistic — limitazione da discutere|
 |Warstadt et al. (2019) BLiMP|1000 coppie per sub-dataset come standard per contrastive probing|Noi: 500 coppie per categoria — sotto lo standard BLiMP; giustificare con vincoli computazionali|
 
@@ -118,33 +118,11 @@ Revisionare criticamente la metodologia e i risultati della tesi come farebbe un
 
 ---
 
-### Risultati da revisionare
-
-**RQ1 — Isotropy + CKA:**
-
-- ΔIso negativo layers 7–22, minimo ≈ −0.12 a layer 14
-- CKA math al layer 23: 0.919 vs ctrl 0.989 (Δ=0.070)
-
-**RQ2 — Linear Probing:**
-
-- Sign: emergence layer 0, peak layer 3, accuracy 1.0
-- Parity: emergence layer 13, peak layer 14, accuracy 1.0
-- C-sweep invariante su C ∈ {0.01, 0.1, 1.0, 10.0}
-
-**T02 — Confound N-01:**
-
-- cosine(w_sign, w_mag) max = 0.078 su 24 layer
-- mag_r2 = 0.86–0.98 da layer 2
-
-**GSM8K:** baseline 0.0 (pre-FT), final pending
-
----
-
 ### Domande aperte prioritarie da investigare
 
 **P0 — Potenzialmente invalidanti:**
 
-1. Sign accuracy = 1.0 al layer 0: questo è plausibile o è un artefatto? Il layer 0 è il layer di embedding — prima di qualsiasi trasformazione. Un'accuracy perfetta qui suggerisce che l'informazione è nel token di input, non nelle rappresentazioni interne. Va discusso con riferimento a Tenney et al. (2019).
+1. Sign decodificabile con accuracy molto elevata già al layer 0: plausibile o artefatto? Il layer 0 è il layer di embedding — prima di qualsiasi trasformazione. Un'accuracy quasi perfetta qui suggerirebbe che l'informazione è nel token di input, non nelle rappresentazioni interne. Va discusso con riferimento a Tenney et al. (2019).
     
 2. Il confound N-01 (primo operando diverso tra pair members in CAT-SIGN) è stato escluso tramite cosine similarity dei pesi — ma questa è una misura indiretta. Esiste un test diretto? La magnitudine del primo operando è correlata con il label sign?
     
