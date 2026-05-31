@@ -89,6 +89,50 @@ def extract_native_states(
         torch.save(H, out_dir / f"layer_{l:02d}.pt")
 
 
+def compute_nf4_snr_interpretation(
+    mean_frob_rel: float,
+    trajectory_df: "pd.DataFrame | None",
+) -> tuple[float | None, float | None, str]:
+    """Frame NF4 degradation as a signal-to-noise floor for RQ3, not a validity verdict.
+
+    The NF4 relative-Frobenius distance is the non-learning floor; the RQ3 max
+    relative drift is the signal. SNR = signal / floor contextualises whether the
+    learning drift stands above quantization noise. The <3%/<5% bands are NOT a
+    validity threshold (they are the project's own operationalisation, not a
+    Dettmers number), so we no longer declare RQ3 invalid from a bare cutoff.
+
+    Args:
+        mean_frob_rel: mean per-layer relative Frobenius distance (the floor).
+        trajectory_df: RQ3 trajectory table (needs geom_delta_math_rel), or None.
+    Returns:
+        (rq3_max_relative_drift, signal_to_noise_ratio, interpretation). The first
+        two are None when the trajectory CSV is absent (SNR not computable).
+    """
+    if (
+        trajectory_df is None
+        or "geom_delta_math_rel" not in trajectory_df.columns
+        or trajectory_df.empty
+    ):
+        interp = (
+            f"floor only — mean relative Frobenius {mean_frob_rel:.3f}; reference "
+            "magnitude for RQ3 drift (SNR not computed: trajectory CSV absent)"
+        )
+        return None, None, interp
+
+    drift_signal = float(trajectory_df["geom_delta_math_rel"].max())
+    snr = drift_signal / mean_frob_rel if mean_frob_rel > 0 else float("inf")
+    tail = (
+        "drift exceeds quantization floor"
+        if snr >= 3
+        else "drift comparable to floor; interpret per-layer drift near the floor with caution"
+    )
+    interp = (
+        f"floor {mean_frob_rel:.3f}; max RQ3 relative drift {drift_signal:.3f}; "
+        f"SNR {snr:.1f}× — {tail}"
+    )
+    return drift_signal, snr, interp
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="NF4 quantization degradation baseline (T16)")
     parser.add_argument(
@@ -214,14 +258,13 @@ def main() -> None:
         mean_frob_rel = float(df_metrics["frobenius_dist_relative"].mean())
         mean_frob_norm = float(df_metrics["frobenius_dist_normalized_dim"].mean())
 
-        # Interpretation bands from Dettmers et al. (2023): <3% degradation for
-        # 1B-7B scales is the empirical baseline.
-        if mean_frob_rel < 0.03:
-            interpretation = "negligible — quantization noise is under the 3% boundary established by Dettmers et al. (2023)"
-        elif mean_frob_rel < 0.05:
-            interpretation = "minor — structural traits preserved with acceptable degradation artifacts"
-        else:
-            interpretation = "significant — quantization noise exceeds baseline bounds, threatening RQ3 trajectory tracking validity"
+        # Signal-to-noise framing: contextualise the quantization floor against the
+        # observed RQ3 learning drift instead of declaring a bare-threshold verdict.
+        traj_path = Path(config.get(
+            "rq3_trajectory_csv", "results/rq2_probing/dynamic/trajectories_probing.csv"
+        ))
+        traj_df = pd.read_csv(traj_path) if traj_path.exists() else None
+        rq3_max_drift, snr, interpretation = compute_nf4_snr_interpretation(mean_frob_rel, traj_df)
 
         summary = {
             "model_name": model_name,
@@ -229,6 +272,8 @@ def main() -> None:
             "quantized_dtype": "nf4 (double-quant, bf16 compute)",
             "mean_frobenius_relative": round(mean_frob_rel, 6),
             "mean_frobenius_normalized_dim": round(mean_frob_norm, 7),
+            "rq3_max_relative_drift": round(rq3_max_drift, 6) if rq3_max_drift is not None else None,
+            "signal_to_noise_ratio": round(snr, 4) if snr is not None else None,
             "interpretation": interpretation,
             "reference": "Dettmers et al. 2023 (QLoRA empirical limits framework)",
             "timestamp": datetime.now().isoformat()
