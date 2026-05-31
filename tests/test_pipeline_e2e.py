@@ -389,6 +389,34 @@ def test_probing_algebra() -> None:
     )
 
 
+# ── RQ4: DETERMINIZATION METRIC ALGEBRA ───────────────────────────────────────
+def test_rq4_metric_functions() -> None:
+    """Pins the closed-form values of the three RQ4 logit metrics on known inputs."""
+    from src.eval.determinization import (next_token_entropy, top1_top2_margin,
+                                          prob_of_target)
+
+    vocab = 50
+    # Uniform logits → maximum entropy log(vocab), zero margin.
+    uniform = np.zeros((1, vocab), dtype=np.float32)
+    assert np.isclose(next_token_entropy(uniform)[0], np.log(vocab), atol=1e-4)
+    assert np.isclose(top1_top2_margin(uniform)[0], 0.0, atol=1e-5)
+
+    # One-hot-ish logits → entropy ≈ 0, P(target)=1, large margin.
+    onehot = np.full((1, vocab), -1e4, dtype=np.float32)
+    onehot[0, 7] = 1e4
+    assert np.isclose(next_token_entropy(onehot)[0], 0.0, atol=1e-4)
+    assert np.isclose(prob_of_target(onehot, np.array([7]))[0], 1.0, atol=1e-6)
+    assert top1_top2_margin(onehot)[0] > 1e3
+
+    # Hand-checked 2-row softmax: logits [0, ln2] → p = [1/3, 2/3].
+    logits = np.array([[0.0, np.log(2.0)], [np.log(2.0), 0.0]], dtype=np.float32)
+    np.testing.assert_allclose(prob_of_target(logits, np.array([0, 0])),
+                               [1 / 3, 2 / 3], atol=1e-5)
+    # margin = |ln2 - 0| = ln2 for both rows.
+    np.testing.assert_allclose(top1_top2_margin(logits),
+                               [np.log(2.0)] * 2, atol=1e-5)
+
+
 # ── M-01: ISOTROPY SIGN-CONVENTION INVARIANT ──────────────────────────────────
 def test_isotropy_sign_convention() -> None:
     """
