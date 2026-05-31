@@ -18,8 +18,10 @@ even though the model runs in fp16. Deterministic over the full math set — no 
 from typing import TypedDict
 
 import numpy as np
+import torch
 
 from src.config.categories import MATH_CATS
+from src.extraction.extract_states import _last_token_indices, _resolve_pad_id
 
 
 # ── SECTION 1 — ROW CONTRACT (ARCH-03) ────────────────────────────────────────
@@ -122,3 +124,39 @@ def build_targets(tokenizer, stimuli: list[dict]) -> tuple[np.ndarray, np.ndarra
         single[i] = (len(continuation) == 1)
 
     return target_ids, single
+
+
+# ── SECTION 4 — LOGIT EXTRACTOR (model-dependent) ─────────────────────────────
+
+def extract_eq_logits(model, stimuli: list[dict], batch_size: int) -> np.ndarray:
+    """Next-token logits at the "=" position for every math stimulus. Returns [n, vocab] float32.
+
+    Mirrors extract_states.extract_from_model's gather: to_tokens right-pads, so the
+    real terminal token ("=") is found per row via _last_token_indices, and the mask
+    is derived from non-pad positions with column 0 forced on (BOS shares pad's id 0).
+    logits[:, t, :] predicts token t+1, so the row at last_idx is P(next token after "=").
+    """
+    rows = math_stimuli(stimuli)
+    if not rows:
+        return np.empty((0, 0), dtype=np.float32)
+
+    pad_id = _resolve_pad_id(model)
+    gathered_batches = []
+
+    for i in range(0, len(rows), batch_size):
+        texts = [s["text"] for s in rows[i : i + batch_size]]
+        tokens = model.to_tokens(texts, prepend_bos=True)
+
+        attention_mask = (tokens != pad_id).long()
+        attention_mask[:, 0] = 1
+
+        last_idx = _last_token_indices(tokens, pad_id)
+        row_idx = torch.arange(tokens.shape[0])
+
+        with torch.no_grad():
+            logits = model(tokens, attention_mask=attention_mask, return_type="logits")
+
+        eq_logits = logits[row_idx, last_idx, :]
+        gathered_batches.append(eq_logits.detach().cpu().to(torch.float32).numpy())
+
+    return np.concatenate(gathered_batches, axis=0)

@@ -460,6 +460,48 @@ def test_rq4_build_targets_non_prefix_raises() -> None:
         build_targets(_StubTokenizer(table), stimuli)
 
 
+# ── RQ4: LOGIT EXTRACTOR (stub model) ─────────────────────────────────────────
+class _StubTok:
+    pad_token_id = 0
+    eos_token_id = 0
+
+
+class _StubModel:
+    """Returns a fixed [B,T,V] logit cube where logits[b,t,k] = 100b + 10t + k,
+    so the gather position is verifiable. pad_id = 0; BOS shares it (column 0)."""
+    tokenizer = _StubTok()
+
+    def to_tokens(self, texts, prepend_bos=True):
+        # Row 0 ends at index 2 (index 3 is pad); row 1 ends at index 3.
+        return torch.tensor([[0, 5, 6, 0], [0, 7, 8, 9]])
+
+    def __call__(self, tokens, attention_mask=None, return_type="logits"):
+        b, t = tokens.shape
+        v = 10
+        grid = (100 * torch.arange(b).view(b, 1, 1)
+                + 10 * torch.arange(t).view(1, t, 1)
+                + torch.arange(v).view(1, 1, v))
+        return grid.to(torch.float16)
+
+
+def test_rq4_extract_eq_logits() -> None:
+    """Gathers the last non-pad ('=') position per row and returns CPU float32."""
+    from src.eval.determinization import extract_eq_logits
+
+    stimuli = [
+        {"id": "m0", "category": "CAT-SIGN", "text": "x ="},
+        {"id": "c0", "category": "CTRL-NUM", "text": "y ."},   # filtered out
+        {"id": "m1", "category": "CAT-PARITY", "text": "z ="},
+    ]
+    out = extract_eq_logits(_StubModel(), stimuli, batch_size=8)
+
+    assert out.shape == (2, 10)
+    assert out.dtype == np.float32
+    # Row 0 gathered at t=2 → 100*0 + 10*2 + k; row 1 at t=3 → 100*1 + 10*3 + k.
+    np.testing.assert_allclose(out[0], 20 + np.arange(10))
+    np.testing.assert_allclose(out[1], 130 + np.arange(10))
+
+
 # ── M-01: ISOTROPY SIGN-CONVENTION INVARIANT ──────────────────────────────────
 def test_isotropy_sign_convention() -> None:
     """
