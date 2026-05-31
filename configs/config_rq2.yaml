@@ -35,3 +35,12 @@ total_training_steps: 12343
 # At d=2048 the floor is pinned near zero with ~6e-5 CI width, so 200 is already
 # wildly oversampled vs 1000 — identical defensible result, step-1 runtime ~32→~9 min.
 iso_floor_bootstrap_n: 200
+
+# ── RQ4 determinization (run_rq4.py) ──────────────────────────────────────────
+# Inference-only sharpening of the "=" next-token distribution across checkpoints.
+# Both keys are optional — run_rq4 reads them via config.get with these defaults:
+#   rq4_batch_size : forward-pass batch over math stimuli (defaults to the model
+#                    profile's extract_batch_size when omitted)
+#   rq4_output_dir : where determinization.csv + per-step JSON are written
+rq4_batch_size: 32
+rq4_output_dir: results/rq4_determinization

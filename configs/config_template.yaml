@@ -40,3 +40,8 @@ bootstrap_ci:        0.95
 
 # ── RQ3 dynamic evaluation ───────────────────────────────────────────────────
 eval_subset_size:    200             # stimuli sampled for geometric drift
+
+# ── RQ4 determinization (run_rq4.py) ─────────────────────────────────────────
+# Optional; run_rq4 reads both via config.get with these defaults.
+rq4_batch_size:      32              # forward batch; falls back to profile extract_batch_size
+rq4_output_dir:      results/rq4_determinization
