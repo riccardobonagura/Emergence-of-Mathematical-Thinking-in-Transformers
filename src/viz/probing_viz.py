@@ -13,8 +13,16 @@ def plot_accuracy_curves(
     model_name: str,
     output_png: Path,
     output_html: Path,
+    emergence_layers: dict[str, int] | None = None,
+    jump_span: tuple[int, int] | None = None,
+    jump_label: str | None = None,
 ) -> None:
-    """Accuracy curves with CI bands for all properties in df."""
+    """Accuracy curves with CI bands for all properties in df.
+
+    Optional overlays (E-G-03 emergence reading): emergence_layers draws a per-property
+    vertical line at the first layer crossing the threshold; jump_span shades the
+    plateau→jump x-range (the parity L12→L13 step) with jump_label as its annotation.
+    """
     properties = df["property"].unique()
 
     # Static figure (300 dpi for thesis)
@@ -29,6 +37,19 @@ def plot_accuracy_curves(
             alpha=0.2,
         )
     ax.axhline(0.5, linestyle="--", color="gray", alpha=0.7, label="Random baseline")
+
+    # Shade the parity plateau→jump span first so curves/lines draw on top.
+    if jump_span is not None:
+        ax.axvspan(jump_span[0], jump_span[1], color="#FBBF24", alpha=0.18,
+                   label=jump_label or "parity jump")
+    if emergence_layers:
+        for prop, lyr in emergence_layers.items():
+            if lyr is None:
+                continue
+            ax.axvline(lyr, linestyle="-.", color="#6B7280", alpha=0.7)
+            ax.annotate(f"{prop} emerges L{lyr}", xy=(lyr, 0.52),
+                        rotation=90, va="bottom", ha="right", fontsize=8, color="#374151")
+
     ax.set_xlabel("Layer")
     ax.set_ylabel("Accuracy")
     ax.set_title(f"Linear Probing Accuracy — {model_name}")
@@ -52,6 +73,18 @@ def plot_accuracy_curves(
             ),
         ))
     fig_html.add_hline(y=0.5, line_dash="dash", line_color="gray")
+    if jump_span is not None:
+        fig_html.add_vrect(x0=jump_span[0], x1=jump_span[1], fillcolor="#FBBF24",
+                           opacity=0.18, line_width=0,
+                           annotation_text=jump_label or "parity jump",
+                           annotation_position="top left")
+    if emergence_layers:
+        for prop, lyr in emergence_layers.items():
+            if lyr is None:
+                continue
+            fig_html.add_vline(x=lyr, line_dash="dashdot", line_color="#6B7280",
+                               annotation_text=f"{prop} emerges L{lyr}",
+                               annotation_position="bottom")
     fig_html.update_layout(
         title=f"Linear Probing Accuracy — {model_name}",
         xaxis_title="Layer", yaxis_title="Accuracy",

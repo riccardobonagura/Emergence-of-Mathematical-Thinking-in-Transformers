@@ -98,3 +98,38 @@ def test_rq4_dashboard_renders(tmp_path, monkeypatch) -> None:
     importlib.reload(m)
     m.main()
     assert (tmp_path / "results/figures/rq4/rq4_determinization.html").exists()
+
+
+def _write_rq2_accuracy_csv(root: Path) -> None:
+    rq2 = root / "results/rq2_probing"
+    rq2.mkdir(parents=True, exist_ok=True)
+    rows = []
+    # sign: above 0.7 from L0. parity: sub-0.7 plateau then a clear jump at L3.
+    sign_acc = [0.92, 0.98, 1.0, 1.0, 1.0]
+    parity_acc = [0.50, 0.60, 0.65, 0.95, 0.97]
+    for layer in range(5):
+        for prop, acc in (("sign", sign_acc[layer]), ("parity", parity_acc[layer])):
+            rows.append({
+                "layer": layer, "property": prop, "accuracy": acc,
+                "accuracy_lower_ci": acc - 0.03, "accuracy_upper_ci": acc + 0.03,
+                "raw_p_value": 0.001, "is_significant": True,
+            })
+    pd.DataFrame(rows).to_csv(rq2 / "accuracy_metrics_corrected.csv", index=False)
+
+
+def test_rq2_accuracy_figure_renders(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    _write_rq2_accuracy_csv(tmp_path)
+    import importlib
+    import src.viz.plot_rq2_probing as m
+    importlib.reload(m)
+
+    df = pd.read_csv(tmp_path / "results/rq2_probing/accuracy_metrics_corrected.csv")
+    # Emergence: sign at L0 (0.92 > 0.7), parity at L3 (first > 0.7).
+    assert m.compute_emergence_layers(df) == {"sign": 0, "parity": 3}
+    # Largest parity single-layer jump is L2→L3 (0.65 → 0.95).
+    assert m.compute_jump_span(df, "parity") == (2, 3)
+
+    m.main()
+    assert (tmp_path / "results/figures/rq2/accuracy_curves.html").exists()
+    assert (tmp_path / "results/figures/rq2/accuracy_curves.png").exists()
