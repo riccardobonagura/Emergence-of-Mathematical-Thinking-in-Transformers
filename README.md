@@ -8,6 +8,10 @@ A reproducible research pipeline that probes how arithmetic structure is represe
 > Codebase: English. Thesis prose: Italian. Methodology and design are governed by the documents in [`docs/`](docs/).
 
 ---
+## Project Map
+<p align="center">
+  <img docs="images/rq1-4.png" width="400"/>
+</p>
 
 ## Table of contents
 
