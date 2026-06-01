@@ -36,6 +36,10 @@ total_training_steps: 12343
 # wildly oversampled vs 1000 — identical defensible result, step-1 runtime ~32→~9 min.
 iso_floor_bootstrap_n: 200
 
+# Optional overrides (documented defaults — code already reads these
+# via .get(key, <canonical>); declared here for traceability)
+rq3_trajectory_csv: results/rq2_probing/dynamic/trajectories_probing.csv
+
 # ── RQ4 determinization (run_rq4.py) ──────────────────────────────────────────
 # Inference-only sharpening of the "=" next-token distribution across checkpoints.
 # Both keys are optional — run_rq4 reads them via config.get with these defaults:

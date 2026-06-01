@@ -305,9 +305,25 @@ python -m src.viz.plot_rq4_determinization
 3. **RQ4 status in the thesis** — is RQ4 a fourth confirmatory RQ or an inference-only supplementary like
    rq1_dynamics? Dataflow frames it as a full RQ subgraph; spec omits it entirely. Affects how §17 should be
    amended (drift #1).
-4. **`nf4_degradation` reads `rq3_trajectory_csv` from config**, but that key is not declared in
-   `config_rq2.yaml` (falls back to the default path). Intentional defaulting, or a missing key?
+4. Q4 — resolved, see §9.
 5. **`max_seq_length` 512 vs 1024** — does the shorter window truncate any MetaMathQA examples relevant to the
    reported train loss ≈ 2.58? Behavioral, not statically determinable (drift #3).
 6. **Two writers on `trajectories_probing.csv`** (`run_rq3` append-or-replace + `eval_gsm8k` merge) — confirm the
    required ordering is documented somewhere runnable, since a gsm8k-before-rq3 run would merge onto absent rows.
+
+---
+
+## §9 Resolutions log
+
+- **Q4** — resolved 2026-06-01 on dev @ fe640e1.
+  Pattern: `config.get("rq3_trajectory_csv", "results/rq2_probing/
+  dynamic/trajectories_probing.csv")` in src/eval/nf4_degradation.py
+  `main()`. Default is the canonical spec §12 path. Absence handling:
+  three defensive guards (path-exists in `main`; None/empty/missing-
+  column in `compute_nf4_snr_interpretation`; zero-floor in the same
+  function) converge to JSON-serializable `None` with an explanatory
+  interpretation string. Value is live (flows into `summary.json`
+  fields `rq3_max_relative_drift`, `signal_to_noise_ratio`).
+  Branch **(1)**: intentional optional override. Cleanup: declared
+  the key in `configs/config_rq2.yaml` under "Optional overrides";
+  no code change.
