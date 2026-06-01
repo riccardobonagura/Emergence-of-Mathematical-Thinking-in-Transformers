@@ -15,13 +15,12 @@ Hardcoded KNOWN_KEYS / COMPOSITE_RITES / ALLOWED_RC are the intentional
 tripwire: when the registry legitimately changes, this file must be edited in
 the same commit. That is the safeguard, not a nuisance.
 
-Two rites get special handling (documented at their assertions):
-  - smoke_test  delegates to `pytest tests/` and does NOT honor --dry-run in
-    oracolo (run_sequence's __pytest__ branch). Executing it from inside this
-    suite would recursively re-invoke pytest. We verify it is a *registered*
-    rite via --list instead of running it.
-  - dataset_regen is a single-step orchestrator rite (one registry key: regen),
-    so the "≥2 chained keys" sanity is relaxed to ≥1 for it.
+Two rites chain fewer than 2 registry keys, so the "≥2 chained keys" sanity is
+relaxed for them (see _MIN_CHAINED_KEYS):
+  - smoke_test  delegates to `pytest tests/` (a non-registry pseudo-step); under
+    --dry-run it echoes the argv without executing pytest, so it is safe to run
+    here and enumerates 0 registry keys.
+  - dataset_regen is a single-step orchestrator rite (one registry key: regen).
 """
 
 from __future__ import annotations
@@ -57,8 +56,9 @@ COMPOSITE_RITES = (
 
 ALLOWED_RC = {0, 2, 3}  # 0=ok, 2=clean missing-arg refusal, 3=D6
 
-# Rites that legitimately chain fewer than 2 registry keys (relaxes the sanity).
-_MIN_CHAINED_KEYS = {"dataset_regen": 1}
+# Rites that legitimately chain fewer than 2 registry keys (relaxes the sanity):
+# smoke_test runs a non-registry pytest step (0 keys); dataset_regen is single-step.
+_MIN_CHAINED_KEYS = {"dataset_regen": 1, "smoke_test": 0}
 
 _PREFLIGHT_RE = re.compile(r"preflight · (\S+)")
 _TRACEBACK = "Traceback (most recent call last)"
@@ -112,15 +112,6 @@ def test_dry_run_every_entrypoint(key):
 
 @pytest.mark.parametrize("rite", COMPOSITE_RITES)
 def test_composite_dry_run(rite):
-    if rite == "smoke_test":
-        # smoke_test delegates to `pytest tests/` and does not honor --dry-run
-        # inside oracolo; executing it here would recurse into this suite.
-        # Verify it is a registered rite via --list instead.
-        r = run_oracolo("--list", "--no-color", "--lang", "en")
-        assert r.returncode == 0, _out(r)
-        assert "smoke_test" in _out(r), "smoke_test rite vanished from --list"
-        return
-
     r = run_oracolo("--dry-run", "--sequence", rite, "--yes", "--no-color", "--lang", "en")
     out = _out(r)
     assert r.returncode in ALLOWED_RC, f"{rite}: rc={r.returncode}\n{out}"
@@ -166,3 +157,23 @@ def test_drift_D3_surfaces_max_seq_length():
     assert _TRACEBACK not in out, out
     assert "max_seq_length" in out, f"D3 did not surface max_seq_length\n{out}"
     assert expected in out, f"D3 did not surface the live value {expected!r}\n{out}"
+
+
+def test_dry_run_smoke_test_does_not_execute_pytest():
+    # python scripts/oracolo.py --dry-run --sequence smoke_test --yes --no-color --lang en
+    result = subprocess.run(
+        [sys.executable, str(ORACOLO), "--dry-run",
+         "--sequence", "smoke_test", "--yes", "--no-color",
+         "--lang", "en"],
+        capture_output=True, text=True, timeout=10, cwd=str(REPO)
+    )
+    out = (result.stdout or "") + "\n" + (result.stderr or "")
+    # Contract: dry-run echoes the argv but does NOT execute pytest. Pytest, when
+    # actually run, prints "collected N items" (or "collecting ..."). Its absence
+    # proves no execution.
+    assert "collected" not in out.lower(), \
+        "pytest appears to have actually run under --dry-run"
+    assert "collecting" not in out.lower()
+    # And the argv echo must be present (proves preflight reached the would-run point).
+    assert "pytest" in out  # the argv mentions pytest
+    assert result.returncode == 0

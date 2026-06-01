@@ -766,6 +766,21 @@ def banner() -> None:
             f"· GPU: {gpu_name() or '—'}", "bold"))
     say(DELPHIC["banner"])
 
+def _run_pytest(ctx: Ctx) -> int:
+    """`pytest tests/ -q` rite step — honors --dry-run uniformly (no fork bomb)."""
+    argv = [PY, "-m", "pytest", "tests/", "-q"]
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = LOG_DIR / f"{datetime.now().strftime('%Y%m%d-%H%M%S')}_pytest.log"
+    info(t("comando: ", "command: ") + c(" ".join(shlex.quote(a) for a in argv), "cyan"))
+    with log_path.open("w", encoding="utf-8") as log:
+        log.write("# " + " ".join(argv) + "\n")
+        if ctx.dry_run:
+            log.write("# dry-run: not executed\n")
+    if ctx.dry_run:
+        info(t("dry-run: nessuna esecuzione.", "dry-run: no execution."))
+        return 0
+    return subprocess.call(argv, cwd=str(REPO_ROOT))
+
 def run_sequence(name: str, ctx: Ctx) -> int:
     if name not in RITES:
         err(t(f"rito sconosciuto: {name}", f"unknown rite: {name}"))
@@ -774,7 +789,7 @@ def run_sequence(name: str, ctx: Ctx) -> int:
     rc = 0
     for key, overrides in RITES[name]:
         if key == "__pytest__":
-            rc = subprocess.call([PY, "-m", "pytest", "tests/", "-q"], cwd=str(REPO_ROOT))
+            rc = _run_pytest(ctx)
         else:
             rc = run_entry(BY_KEY[key], overrides, ctx)
         if rc != 0:
