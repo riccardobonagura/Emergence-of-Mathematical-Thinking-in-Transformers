@@ -135,6 +135,24 @@ def test_rq2_accuracy_figure_renders(tmp_path, monkeypatch) -> None:
     assert (tmp_path / "results/figures/rq2/accuracy_curves.png").exists()
 
 
+def test_pca_two_class_figure(tmp_path) -> None:
+    import numpy as np
+    from src.viz.pca_umap_viz import plot_layer_category_figures
+
+    rng = np.random.default_rng(0)
+    H = rng.standard_normal((40, 8)).astype(np.float32)
+    categories = (["CAT-SIGN"] * 10 + ["CAT-PARITY"] * 10
+                  + ["CTRL-NEU"] * 10 + ["CTRL-NUM"] * 10)
+
+    fig = plot_layer_category_figures(H, categories, layer=23, out_dir=tmp_path, reducer="pca")
+
+    assert (tmp_path / "pca_2class_layer_23.html").exists()
+    assert (tmp_path / "pca_4way_layer_23.png").exists()
+    # Exactly two color groups: math and ctrl.
+    assert len(fig.data) == 2
+    assert {tr.name for tr in fig.data} == {"math", "ctrl"}
+
+
 def test_rq2_confound_effect_figure(tmp_path) -> None:
     from src.viz.probing_viz import plot_effect_vs_significance
 

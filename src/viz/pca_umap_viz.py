@@ -116,6 +116,63 @@ def scatter_2d(
     raise ValueError(f"backend must be one of: matplotlib, seaborn, plotly")
 
 
+LABEL_MAP_4WAY = {"CAT-SIGN": 0, "CAT-PARITY": 1, "CTRL-NEU": 2, "CTRL-NUM": 3}
+CATEGORY_2CLASS = {"CAT-SIGN": "math", "CAT-PARITY": "math",
+                   "CTRL-NEU": "ctrl", "CTRL-NUM": "ctrl"}
+
+
+def two_class_labels(categories: Sequence[str]) -> list[str]:
+    """Collapse the 4 dataset categories to math vs ctrl."""
+    return [CATEGORY_2CLASS[c] for c in categories]
+
+
+def reduce_embeddings(representations, reducer: str = "pca", n_components: int = 2) -> np.ndarray:
+    """Dispatch to PCA or (import-guarded) UMAP; returns (n, n_components)."""
+    reducer = reducer.lower().strip()
+    if reducer == "pca":
+        return compute_pca_embeddings(representations, n_components=n_components)
+    if reducer == "umap":
+        return compute_umap_embeddings(representations, n_components=n_components)
+    raise ValueError("reducer must be one of: pca, umap")
+
+
+def plot_layer_category_figures(
+    representations,
+    categories: Sequence[str],
+    layer: int,
+    out_dir,
+    reducer: str = "pca",
+) -> "Figure":
+    """Per-layer figures: the existing 4-way static PNG plus a 2-class (math vs ctrl)
+    interactive HTML. At the terminal layer the title notes inter-category CKA≈0.01 ≈
+    the matched baselines — i.e. no math-specific geometry; any visible separation in
+    the top-2 components tracks the high-variance terminal-'=' positional axis (RQ1
+    confound), not mathematical content. Returns the 2-class plotly figure (testability)."""
+    from pathlib import Path
+    import matplotlib.pyplot as plt
+
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    emb = reduce_embeddings(representations, reducer)
+    tag = reducer.lower().strip()
+
+    # 4-way static PNG (preserves the original behavior).
+    labels4 = [LABEL_MAP_4WAY[c] for c in categories]
+    fig4 = scatter_2d(emb, labels4, title=f"{tag.upper()} 4-way — Layer {layer:02d}",
+                      backend="matplotlib")
+    fig4.savefig(out_dir / f"{tag}_4way_layer_{layer:02d}.png", dpi=150)
+    plt.close(fig4)
+
+    # 2-class interactive HTML (math vs ctrl).
+    title = f"{tag.upper()} math vs ctrl — Layer {layer:02d}"
+    if int(layer) == 23:
+        title += (" — inter-category CKA≈0.01 ≈ matched baselines: no math-specific "
+                  "geometry (separation tracks the terminal-'=' positional axis)")
+    fig2 = scatter_2d(emb, two_class_labels(categories), title=title, backend="plotly")
+    fig2.write_html(str(out_dir / f"{tag}_2class_layer_{layer:02d}.html"))
+    return fig2
+
+
 def _to_numpy_2d(x: "torch.Tensor | np.ndarray") -> np.ndarray:
     """Convert tensor or array to float64 2-D numpy array."""
     if torch is not None and isinstance(x, torch.Tensor):
@@ -131,11 +188,12 @@ if __name__ == "__main__":
     from pathlib import Path
     from src.probing.io_utils import load_hidden_states
 
-    parser = argparse.ArgumentParser(description="PCA scatter for key layers.")
-    parser.add_argument("--layers", nargs="+", type=int, default=[3, 14, 23])
+    parser = argparse.ArgumentParser(description="Math-vs-ctrl PCA/UMAP scatter per layer.")
+    # Default emphasizes the terminal layer (figure 3: the inter-category overlap at L23).
+    parser.add_argument("--layers", nargs="+", type=int, default=[23])
     parser.add_argument("--proc_dir", default="data/processed/pythia-1.4b")
     parser.add_argument("--out_dir", default="results/figures/pca")
-    parser.add_argument("--backend", default="matplotlib")
+    parser.add_argument("--reducer", default="pca", choices=["pca", "umap"])
     args = parser.parse_args()
 
     proc  = Path(args.proc_dir)
@@ -143,13 +201,8 @@ if __name__ == "__main__":
     with open(proc / "metadata.json", encoding="utf-8") as f:
         meta = json.load(f)
     cats  = meta["categories"]
-    label_map = {"CAT-SIGN": 0, "CAT-PARITY": 1, "CTRL-NEU": 2, "CTRL-NUM": 3}
-    labels = [label_map[c] for c in cats]
 
     for layer in args.layers:
-        H   = load_hidden_states(proc / f"layer_{layer:02d}.pt")
-        emb = compute_pca_embeddings(H, n_components=2)
-        fig = scatter_2d(emb, labels, title=f"PCA — Layer {layer:02d}", backend=args.backend)
-        path = out / f"pca_layer_{layer:02d}.png"
-        fig.savefig(path, dpi=150)
-        print(f"[OK] Layer {layer:02d} → {path}")
+        H = load_hidden_states(proc / f"layer_{layer:02d}.pt")
+        plot_layer_category_figures(H, cats, layer, out, reducer=args.reducer)
+        print(f"[OK] Layer {layer:02d} → {out} ({args.reducer}: 4-way PNG + 2-class HTML)")
