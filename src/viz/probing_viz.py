@@ -93,6 +93,110 @@ def plot_accuracy_curves(
     fig_html.write_html(output_html)
 
 
+def build_confound_effect_table(
+    sign_df: pd.DataFrame,
+    parity_df: pd.DataFrame,
+) -> pd.DataFrame:
+    """Tidy per-layer |effect| + significance for the two logit-correlation confounds.
+
+    sign:   sign_logits_correlation_with_op1     / is_significant_op1_leak     (N-01)
+    parity: parity_logits_correlation_with_op2parity / is_significant_op2_leak (N-02)
+    Uses the LOGIT-correlation columns, not the cosine_* weight metric. NaN effects
+    are dropped; missing/NaN significance is treated as not-significant.
+    """
+    specs = [
+        ("sign↔op1", sign_df, "sign_logits_correlation_with_op1", "is_significant_op1_leak"),
+        ("parity↔op2-parity", parity_df, "parity_logits_correlation_with_op2parity", "is_significant_op2_leak"),
+    ]
+    frames = []
+    for confound, df, eff_col, sig_col in specs:
+        sub = df[["layer", eff_col, sig_col]].copy()
+        sub = sub[sub[eff_col].notna()]
+        frames.append(pd.DataFrame({
+            "layer": sub["layer"].astype(int),
+            "confound": confound,
+            "effect_abs": sub[eff_col].abs(),
+            "significant": sub[sig_col].fillna(False).astype(bool),
+        }))
+    return pd.concat(frames, ignore_index=True)
+
+
+def plot_effect_vs_significance(
+    sign_df: pd.DataFrame,
+    parity_df: pd.DataFrame,
+    output_png: Path,
+    output_html: Path,
+) -> pd.DataFrame:
+    """Per-layer grouped bars of |confound effect|, BH-significant layers marked.
+
+    The E-M-03 exhibit: both confounds are BH-significant at most layers, yet the sign
+    effect (~0.6) dwarfs the parity effect (~0.2) — significance ≠ effect size. Returns
+    the tidy table actually plotted (for testability)."""
+    tidy = build_confound_effect_table(sign_df, parity_df)
+    layers = sorted(tidy["layer"].unique())
+    confounds = ["sign↔op1", "parity↔op2-parity"]
+    colors = {"sign↔op1": "#D85A30", "parity↔op2-parity": "#3B8BD4"}
+
+    def series(confound: str) -> tuple[list, list]:
+        sub = tidy[tidy["confound"] == confound].set_index("layer")
+        eff = [float(sub.loc[l, "effect_abs"]) if l in sub.index else 0.0 for l in layers]
+        sig = [bool(sub.loc[l, "significant"]) if l in sub.index else False for l in layers]
+        return eff, sig
+
+    mean_eff = tidy.groupby("confound")["effect_abs"].mean()
+    title = (
+        "Confound effect size vs significance (E-M-03) — "
+        f"sign↔op1 ≈{mean_eff.get('sign↔op1', float('nan')):.2f} ≫ "
+        f"parity↔op2-parity ≈{mean_eff.get('parity↔op2-parity', float('nan')):.2f}; "
+        "BH-significant at most layers — significance ≠ effect size"
+    )
+
+    # Static grouped bars: hatched = NOT BH-significant.
+    x = np.arange(len(layers))
+    width = 0.4
+    fig, ax = plt.subplots(figsize=(12, 6), dpi=300)
+    for k, confound in enumerate(confounds):
+        eff, sig = series(confound)
+        bars = ax.bar(x + (k - 0.5) * width, eff, width,
+                      label=confound, color=colors[confound], alpha=0.9)
+        for b, s in zip(bars, sig):
+            if not s:
+                b.set_hatch("///")
+    ax.set_xticks(x); ax.set_xticklabels(layers)
+    ax.set_xlabel("Layer"); ax.set_ylabel("|logit-correlation effect|")
+    ax.set_title(title, fontsize=9)
+    ax.legend(loc="upper right", title="hatched = not BH-significant")
+    ax.grid(True, axis="y", linestyle=":", alpha=0.6)
+    plt.tight_layout()
+    plt.savefig(output_png)
+    plt.close()
+
+    # Interactive grouped bars: pattern "/" = NOT BH-significant; star over significant bars.
+    fig_html = go.Figure()
+    for confound in confounds:
+        eff, sig = series(confound)
+        fig_html.add_trace(go.Bar(
+            x=layers, y=eff, name=confound, marker_color=colors[confound],
+            marker_pattern_shape=["" if s else "/" for s in sig],
+            customdata=["BH-significant" if s else "not significant" for s in sig],
+            hovertemplate="Layer %{x}<br>|effect| %{y:.3f}<br>%{customdata}<extra>" + confound + "</extra>",
+        ))
+        star_x = [l for l, s in zip(layers, sig) if s]
+        star_y = [e for e, s in zip(eff, sig) if s]
+        if star_x:
+            fig_html.add_trace(go.Scatter(
+                x=star_x, y=star_y, mode="markers", showlegend=False,
+                marker=dict(symbol="star", size=8, color="#111827"),
+                hoverinfo="skip",
+            ))
+    fig_html.update_layout(
+        title=title, barmode="group", template="plotly_white",
+        xaxis_title="Layer", yaxis_title="|logit-correlation effect|",
+    )
+    fig_html.write_html(output_html)
+    return tidy
+
+
 def plot_angles_heatmap(
     df: pd.DataFrame,
     layer: int,

@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.viz.probing_viz import plot_accuracy_curves
+from src.viz.probing_viz import plot_accuracy_curves, plot_effect_vs_significance
 
 EMERGENCE_THRESHOLD = 0.7
 
@@ -63,6 +63,17 @@ def main(results_dir: str = "results/rq2_probing", out_dir: str = "results/figur
         emergence_layers=emergence, jump_span=jump_span, jump_label=jump_label,
     )
     print(f"RQ2 accuracy figure saved: {out/'accuracy_curves.html'} | emergence={emergence}")
+
+    # Figure 1 (E-M-03): confound effect size vs significance, if both tables exist.
+    sign_file = results / "confound_checks_hardened.csv"
+    parity_file = results / "parity_confound_checks.csv"
+    if sign_file.exists() and parity_file.exists():
+        plot_effect_vs_significance(
+            pd.read_csv(sign_file), pd.read_csv(parity_file),
+            output_png=out / "confound_effect_vs_significance.png",
+            output_html=out / "confound_effect_vs_significance.html",
+        )
+        print(f"RQ2 confound effect figure saved: {out/'confound_effect_vs_significance.html'}")
 
 
 if __name__ == "__main__":

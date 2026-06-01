@@ -133,3 +133,35 @@ def test_rq2_accuracy_figure_renders(tmp_path, monkeypatch) -> None:
     m.main()
     assert (tmp_path / "results/figures/rq2/accuracy_curves.html").exists()
     assert (tmp_path / "results/figures/rq2/accuracy_curves.png").exists()
+
+
+def test_rq2_confound_effect_figure(tmp_path) -> None:
+    from src.viz.probing_viz import plot_effect_vs_significance
+
+    layers = list(range(4))
+    # sign effect ~0.6 all-significant; parity effect ~0.15 all-significant; one NaN row.
+    sign_df = pd.DataFrame({
+        "layer": layers,
+        "sign_logits_correlation_with_op1": [0.61, 0.59, 0.62, 0.60],
+        "is_significant_op1_leak": [True, True, True, True],
+    })
+    parity_df = pd.DataFrame({
+        "layer": layers,
+        "parity_logits_correlation_with_op2parity": [0.15, 0.14, float("nan"), 0.16],
+        "is_significant_op2_leak": [True, True, False, True],
+    })
+    out = tmp_path / "fig"
+    out.mkdir()
+    tidy = plot_effect_vs_significance(
+        sign_df, parity_df, out / "c.png", out / "c.html")
+
+    assert (out / "c.html").exists() and (out / "c.png").exists()
+    # Both confound series present; sign effect dwarfs parity (E-M-03).
+    assert set(tidy["confound"]) == {"sign↔op1", "parity↔op2-parity"}
+    means = tidy.groupby("confound")["effect_abs"].mean()
+    assert means["sign↔op1"] > 0.5 > means["parity↔op2-parity"]
+    # NaN parity row dropped → parity has 3 rows; significance maps verbatim.
+    parity_rows = tidy[tidy["confound"] == "parity↔op2-parity"]
+    assert len(parity_rows) == 3
+    assert parity_rows["significant"].all()  # the only False row was the dropped NaN
+    assert tidy[tidy["confound"] == "sign↔op1"]["significant"].all()
