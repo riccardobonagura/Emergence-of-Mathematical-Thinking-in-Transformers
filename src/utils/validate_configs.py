@@ -8,16 +8,11 @@ import logging
 import sys
 import yaml
 from pathlib import Path
-from typing import Any, Dict, Literal, TypedDict, cast
+from typing import Any, Dict, TypedDict, cast
 
 # Centralized single source of truth for categories validation
 from src.config.categories import ALL_CATS
-
-
-class PropConfig(TypedDict):
-    label_field: str
-    category: str | None
-    type: Literal["binary", "multiclass"]
+from src.config.schemas import PropConfig
 
 
 class ProbingConfig(TypedDict):

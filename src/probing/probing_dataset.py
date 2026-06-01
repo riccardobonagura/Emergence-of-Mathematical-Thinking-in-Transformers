@@ -7,21 +7,13 @@ import json
 import logging
 import numpy as np
 from pathlib import Path
-from typing import List, Tuple, Dict, TypedDict
+from typing import List, Tuple, Dict
 from sklearn.model_selection import train_test_split
 
+from src.config.schemas import PropConfig
 from src.probing.seeds import get_seed
 
 log = logging.getLogger("probing")
-
-
-class _PropConfigOptional(TypedDict, total=False):
-    category: str
-
-
-class PropConfig(_PropConfigOptional):
-    label_field: str
-    type: str
 
 
 class ProbingDataset:

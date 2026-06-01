@@ -328,6 +328,58 @@ def test_category_filter_invariant(mock_pipeline_env) -> None:
         assert matched_stimulus["labels"]["operand1"] != 99, "Contaminated row leaked into active split."
 
 
+# ── B-04: PROPCONFIG SSOT (one canonical TypedDict) ───────────────────────────
+def test_propconfig_single_source_of_truth() -> None:
+    """probing_dataset and validate_configs reference the same canonical PropConfig."""
+    import src.config.schemas as schemas
+    import src.probing.probing_dataset as pds
+    import src.utils.validate_configs as vc
+
+    assert pds.PropConfig is schemas.PropConfig
+    assert vc.PropConfig is schemas.PropConfig
+
+
+def test_validator_category_guardrail_intact() -> None:
+    """The anti-contamination guardrail must fail closed when 'category' is absent,
+    while category=None and a known category both pass and an unknown one raises."""
+    from src.utils.validate_configs import _validate_probing_schema
+
+    def cfg(prop: dict) -> dict:
+        return {
+            "model_name": "m", "output_dir": "/tmp/nonexistent_ssot_dir",
+            "figures_dir": "f", "train_split": 0.8, "seed": 42, "n_jobs": 1,
+            "bootstrap_ci": 0.95, "bootstrap_n_samples": 10, "n_permutation_tests": 10,
+            "properties": {"p": prop},
+        }
+
+    # Missing category → fail closed.
+    with pytest.raises(KeyError, match="category"):
+        _validate_probing_schema(cfg({"label_field": "sign", "type": "binary"}))
+
+    # Explicit null and a known category both pass.
+    _validate_probing_schema(cfg({"label_field": "sign", "category": None, "type": "binary"}))
+    _validate_probing_schema(cfg({"label_field": "sign", "category": "CAT-SIGN", "type": "binary"}))
+
+    # Unknown category → raise.
+    with pytest.raises(ValueError, match="Unknown category"):
+        _validate_probing_schema(cfg({"label_field": "sign", "category": "CAT-BOGUS", "type": "binary"}))
+
+
+def test_propconfig_runtime_tolerates_missing_category(mock_pipeline_env) -> None:
+    """probing_dataset still runs (no filter) for a property lacking category,
+    matching config_test.yaml behavior — the permissive type allows omission."""
+    env = mock_pipeline_env
+    from src.probing.probing_dataset import ProbingDataset
+
+    with open(env["root"] / "data/processed/pythia-1.4b/metadata.json", "r", encoding="utf-8") as f:
+        meta_data = json.load(f)
+
+    dataset = ProbingDataset(stimuli_path=env["master_jsonl"], stimuli_ids=meta_data["stimuli_ids"])
+    # No "category" key → no filtering; extraction succeeds across all categories.
+    indices, labels = dataset._extract("sign", {"label_field": "sign", "type": "binary"})
+    assert len(indices) == len(labels) and len(indices) > 0
+
+
 # ── SECTION 3 — RQ3 PIPELINE INTEGRATION RUNNER ────────────────────────────────
 
 @patch("run_rq3.load_hidden_states")
