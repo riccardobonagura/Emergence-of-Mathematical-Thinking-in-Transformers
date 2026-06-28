@@ -410,9 +410,9 @@ def test_rq3_pipeline(mock_load, mock_pipeline_env, monkeypatch) -> None:
     assert (df["geom_delta_math_rel"] > 0.0).any(), "Relative Frobenius drift must be positive."
 
 
-# ── RQ4: DETERMINIZATION DRIVER INTEGRATION ───────────────────────────────────
-def test_rq4_pipeline(mock_pipeline_env, monkeypatch) -> None:
-    """Drives run_rq4.main with model+tokenizer loaders stubbed and logits synthetic."""
+# ── RQ5: DETERMINIZATION DRIVER INTEGRATION ───────────────────────────────────
+def test_rq5_pipeline(mock_pipeline_env, monkeypatch) -> None:
+    """Drives run_rq5.main with model+tokenizer loaders stubbed and logits synthetic."""
     env = mock_pipeline_env
     monkeypatch.chdir(env["root"])
 
@@ -420,8 +420,8 @@ def test_rq4_pipeline(mock_pipeline_env, monkeypatch) -> None:
     (env["root"] / "data/processed/checkpoints/checkpoint-2500").mkdir(parents=True, exist_ok=True)
 
     import importlib
-    import run_rq4
-    importlib.reload(run_rq4)
+    import run_rq5
+    importlib.reload(run_rq5)
 
     # 60 math rows in the fixture (30 CAT-SIGN + 30 CAT-PARITY). Synthesize aligned arrays.
     n_math, vocab = 60, 20
@@ -431,18 +431,18 @@ def test_rq4_pipeline(mock_pipeline_env, monkeypatch) -> None:
     target_ids = (np.arange(n_math) % vocab).astype(np.int64)
     single_mask = np.arange(n_math) < 45  # mixed single/multi within each category
 
-    monkeypatch.setattr(run_rq4, "load_base_model", lambda mid: object())
-    monkeypatch.setattr(run_rq4, "load_tokenizer", lambda mid: object())
-    monkeypatch.setattr(run_rq4, "build_hooked_model", lambda b, mid, c: object())
-    monkeypatch.setattr(run_rq4, "build_targets", lambda tok, stim: (target_ids, single_mask))
-    monkeypatch.setattr(run_rq4, "extract_eq_logits", lambda m, stim, bs: fake_logits)
+    monkeypatch.setattr(run_rq5, "load_base_model", lambda mid: object())
+    monkeypatch.setattr(run_rq5, "load_tokenizer", lambda mid: object())
+    monkeypatch.setattr(run_rq5, "build_hooked_model", lambda b, mid, c: object())
+    monkeypatch.setattr(run_rq5, "build_targets", lambda tok, stim: (target_ids, single_mask))
+    monkeypatch.setattr(run_rq5, "extract_eq_logits", lambda m, stim, bs: fake_logits)
 
-    test_args = ["run_rq4.py", "--config", str(env["config"])]
+    test_args = ["run_rq5.py", "--config", str(env["config"])]
     with patch.object(sys, "argv", test_args):
-        run_rq4.main()
+        run_rq5.main()
 
-    csv_path = env["root"] / "results/rq4_determinization/determinization.csv"
-    assert csv_path.exists(), "RQ4 determinization CSV missing."
+    csv_path = env["root"] / "results/rq5_determinization/determinization.csv"
+    assert csv_path.exists(), "RQ5 determinization CSV missing."
     df = pd.read_csv(csv_path)
 
     expected_cols = {"step", "category", "n_rows", "n_single_token", "entropy_mean",
@@ -490,9 +490,9 @@ def test_probing_algebra() -> None:
     )
 
 
-# ── RQ4: DETERMINIZATION METRIC ALGEBRA ───────────────────────────────────────
-def test_rq4_metric_functions() -> None:
-    """Pins the closed-form values of the three RQ4 logit metrics on known inputs."""
+# ── RQ5: DETERMINIZATION METRIC ALGEBRA ───────────────────────────────────────
+def test_rq5_metric_functions() -> None:
+    """Pins the closed-form values of the three RQ5 logit metrics on known inputs."""
     from src.eval.determinization import (next_token_entropy, top1_top2_margin,
                                           prob_of_target)
 
@@ -518,7 +518,7 @@ def test_rq4_metric_functions() -> None:
                                [np.log(2.0)] * 2, atol=1e-5)
 
 
-# ── RQ4: TARGET-TOKEN BUILDER (stub tokenizer) ────────────────────────────────
+# ── RQ5: TARGET-TOKEN BUILDER (stub tokenizer) ────────────────────────────────
 class _StubTokenizer:
     """Maps exact strings to id lists so build_targets needs no real tokenizer."""
     def __init__(self, table: dict) -> None:
@@ -528,7 +528,7 @@ class _StubTokenizer:
         return self._table[text]
 
 
-def test_rq4_build_targets() -> None:
+def test_rq5_build_targets() -> None:
     """Prefix-strip picks continuation[0]; single-token mask flags one-token results."""
     from src.eval.determinization import build_targets
 
@@ -551,7 +551,7 @@ def test_rq4_build_targets() -> None:
     assert single.tolist() == [True, False]
 
 
-def test_rq4_build_targets_non_prefix_raises() -> None:
+def test_rq5_build_targets_non_prefix_raises() -> None:
     """encode(text) not a prefix of encode(text+' '+result) must fail fast."""
     from src.eval.determinization import build_targets
 
@@ -561,7 +561,7 @@ def test_rq4_build_targets_non_prefix_raises() -> None:
         build_targets(_StubTokenizer(table), stimuli)
 
 
-# ── RQ4: LOGIT EXTRACTOR (stub model) ─────────────────────────────────────────
+# ── RQ5: LOGIT EXTRACTOR (stub model) ─────────────────────────────────────────
 class _StubTok:
     pad_token_id = 0
     eos_token_id = 0
@@ -585,7 +585,7 @@ class _StubModel:
         return grid.to(torch.float16)
 
 
-def test_rq4_extract_eq_logits() -> None:
+def test_rq5_extract_eq_logits() -> None:
     """Gathers the last non-pad ('=') position per row and returns CPU float32."""
     from src.eval.determinization import extract_eq_logits
 
@@ -603,10 +603,10 @@ def test_rq4_extract_eq_logits() -> None:
     np.testing.assert_allclose(out[1], 130 + np.arange(10))
 
 
-# ── RQ4: SINGLE-TOKEN-RESTRICTED ENTROPY / MARGIN ─────────────────────────────
-def test_rq4_single_restricted_metrics() -> None:
+# ── RQ5: SINGLE-TOKEN-RESTRICTED ENTROPY / MARGIN ─────────────────────────────
+def test_rq5_single_restricted_metrics() -> None:
     """*_single reflect only the masked subset, distinct from full-population means."""
-    from run_rq4 import aggregate_step
+    from run_rq5 import aggregate_step
 
     n, vocab = 10, 20
     logits = np.zeros((n, vocab), dtype=np.float32)        # default: uniform rows

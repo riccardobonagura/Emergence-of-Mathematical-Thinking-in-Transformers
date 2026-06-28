@@ -1,8 +1,8 @@
 #!/usr/bin/env python
-"""run_rq4.py — RQ4 driver: behavioral determinization at the "=" token.
+"""run_rq5.py — RQ5 driver: behavioral determinization at the "=" token.
 
 E-P-02: the "=" next-token distribution is the model's *expected result* before it
-is generated. RQ4 tracks how that distribution sharpens across the QLoRA checkpoints
+is generated. RQ5 tracks how that distribution sharpens across the QLoRA checkpoints
 — next-token entropy ↓, top1-top2 logit margin ↑, P(answer) ↑ — as inference-only,
 correlative evidence of the fine-tuning trajectory (no causal claim, E-O-01).
 
@@ -34,7 +34,7 @@ from peft import PeftModel
 from transformer_lens import HookedTransformer
 
 from src.config.models import get_model_profile
-from src.eval.determinization import (RQ4DeterminizationRow, build_targets,
+from src.eval.determinization import (RQ5DeterminizationRow, build_targets,
                                        extract_eq_logits, math_stimuli,
                                        next_token_entropy, prob_of_target,
                                        top1_top2_margin)
@@ -43,7 +43,7 @@ from src.extraction.extract_states import load_stimuli
 from src.probing.io_utils import _atomic_write_csv, _atomic_write_json
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-logger = logging.getLogger("run_rq4")
+logger = logging.getLogger("run_rq5")
 
 CHECKPOINTS_BASE = Path("data/processed/checkpoints")
 STIMULI_PATH = Path("data/processed/dataset_master_v5.jsonl")
@@ -110,13 +110,13 @@ def aggregate_step(
     categories: np.ndarray,
     target_ids: np.ndarray,
     single_mask: np.ndarray,
-) -> list[RQ4DeterminizationRow]:
+) -> list[RQ5DeterminizationRow]:
     """One row per math category for this step. Continuous metrics in float32."""
     entropy = next_token_entropy(logits)
     margin = top1_top2_margin(logits)
     p_first = prob_of_target(logits, target_ids)  # P(answer's first token)
 
-    rows: list[RQ4DeterminizationRow] = []
+    rows: list[RQ5DeterminizationRow] = []
     for cat in ("CAT-SIGN", "CAT-PARITY"):
         cat_mask = categories == cat
         n_rows = int(cat_mask.sum())
@@ -155,7 +155,7 @@ def aggregate_step(
 # ── DRIVER ─────────────────────────────────────────────────────────────────────
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="RQ4 determinization at '='")
+    parser = argparse.ArgumentParser(description="RQ5 determinization at '='")
     parser.add_argument("--config", required=True)
     args = parser.parse_args()
 
@@ -165,8 +165,8 @@ def main() -> None:
     model_name = config.get("model_name", "pythia-1.4b")
     profile = get_model_profile(model_name)
     base_model_id = profile["hf_path"]
-    batch_size = int(config.get("rq4_batch_size", profile["extract_batch_size"]))
-    out_dir = Path(config.get("rq4_output_dir", "results/rq4_determinization"))
+    batch_size = int(config.get("rq5_batch_size", profile["extract_batch_size"]))
+    out_dir = Path(config.get("rq5_output_dir", "results/rq5_determinization"))
 
     stimuli = load_stimuli(STIMULI_PATH)
     categories = np.array([s["category"] for s in math_stimuli(stimuli)])
@@ -180,7 +180,7 @@ def main() -> None:
     steps = enumerate_steps(config)
     logger.info("Evaluating %d steps: %s", len(steps), [s for s, _ in steps])
 
-    all_rows: list[RQ4DeterminizationRow] = []
+    all_rows: list[RQ5DeterminizationRow] = []
     for step, ckpt_dir in steps:
         logger.info("Step %d (%s)", step, "base" if ckpt_dir is None else ckpt_dir.name)
         model = build_hooked_model(base_hf, base_model_id, ckpt_dir)
@@ -202,7 +202,7 @@ def main() -> None:
         df = pd.concat([old[~old["step"].isin(df["step"].unique())], df], ignore_index=True)
 
     _atomic_write_csv(traj, df.to_dict("records"), df.columns.tolist())
-    logger.info("RQ4 determinization written to %s (%d rows)", traj, len(df))
+    logger.info("RQ5 determinization written to %s (%d rows)", traj, len(df))
 
 
 if __name__ == "__main__":

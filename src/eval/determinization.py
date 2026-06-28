@@ -1,8 +1,8 @@
-"""determinization.py — RQ4: behavioral determinization at the "=" token.
+"""determinization.py — RQ5: behavioral determinization at the "=" token.
 
 E-P-02: the extraction point is the "=" token, so the next-token distribution there
 is the model's *expected result* before it is generated, not the computed result.
-RQ4 measures how that distribution *sharpens* over fine-tuning — lower next-token
+RQ5 measures how that distribution *sharpens* over fine-tuning — lower next-token
 entropy, larger top1-top2 logit margin, higher probability on the answer token —
 as inference-only, correlative evidence of the FT trajectory.
 
@@ -26,7 +26,7 @@ from src.extraction.extract_states import _last_token_indices, _resolve_pad_id
 
 # ── SECTION 1 — ROW CONTRACT (ARCH-03) ────────────────────────────────────────
 
-class RQ4DeterminizationRow(TypedDict):
+class RQ5DeterminizationRow(TypedDict):
     """Per-(step, category) row in determinization.csv. Aggregated over examples.
 
     entropy_mean / margin_mean / p_first_token_mean are over ALL rows in the category;
@@ -91,7 +91,7 @@ def prob_of_target(logits: np.ndarray, target_ids: np.ndarray) -> np.ndarray:
 # ── SECTION 3 — TARGET-TOKEN BUILDER (tokenizer-dependent) ────────────────────
 
 def math_stimuli(stimuli: list[dict]) -> list[dict]:
-    """Math-category rows in source order. The single ordering RQ4 aligns to:
+    """Math-category rows in source order. The single ordering RQ5 aligns to:
     build_targets and extract_eq_logits must both filter through this helper."""
     return [s for s in stimuli if s["category"] in MATH_CATS]
 

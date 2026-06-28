@@ -103,7 +103,7 @@ class Category(Enum):
     RQ2 = ("RQ2 · probing", "⊕")
     FINETUNING = ("Fine-tuning", "🜚")
     RQ3 = ("RQ3 · deriva", "⇌")
-    RQ4 = ("RQ4 · determinazione", "⚖")
+    RQ5 = ("RQ5 · determinazione", "⚖")
     EVAL = ("Valutazione", "𝛴")
     VIZ = ("Visualizzazioni", "◐")
     TESTS = ("Test", "✓")
@@ -221,9 +221,9 @@ REGISTRY: list[Entrypoint] = [
         [PY, "run_rq3.py"], required_args=["--config", "--checkpoint_dir"],
         inputs=[BASE, R2 / "weights"], outputs=[R2 / "dynamic/trajectories_probing.csv"],
         description="Frozen-probe acc + dual Frobenius drift per step."),
-    Entrypoint("rq4", "Determinazione al segno '='", "RQ4 determinization", CAT.RQ4,
-        [PY, "run_rq4.py"], required_args=["--config"], inputs=[CFG, DS],
-        outputs=[R / "rq4_determinization/determinization.csv"], gpu_required=True, cost="long",
+    Entrypoint("rq5", "Determinazione al segno '='", "RQ5 determinization", CAT.RQ5,
+        [PY, "run_rq5.py"], required_args=["--config"], inputs=[CFG, DS],
+        outputs=[R / "rq5_determinization/determinization.csv"], gpu_required=True, cost="long",
         description='"=" next-token determinization (entropy/margin/P(ans)).'),
     Entrypoint("gsm8k", "Prova di GSM8K", "GSM8K 0-shot eval", CAT.EVAL,
         [PY, "-m", "src.eval.eval_gsm8k"], required_args=["--model_path", "--tag", "--config"],
@@ -250,11 +250,11 @@ REGISTRY: list[Entrypoint] = [
         inputs=[R2 / "dynamic/trajectories_probing.csv"],
         outputs=[R / "figures/rq3/rq3_dashboard.html"],
         description="3-panel trajectory/drift dashboard."),
-    Entrypoint("viz-rq4", "Cruscotto RQ4", "RQ4 dashboard", CAT.VIZ,
-        [PY, "-m", "src.viz.plot_rq4_determinization"],
-        inputs=[R / "rq4_determinization/determinization.csv"],
-        outputs=[R / "figures/rq4/rq4_determinization.html"],
-        description="RQ4 determinization dashboard."),
+    Entrypoint("viz-rq5", "Cruscotto RQ5", "RQ5 dashboard", CAT.VIZ,
+        [PY, "-m", "src.viz.plot_rq5_determinization"],
+        inputs=[R / "rq5_determinization/determinization.csv"],
+        outputs=[R / "figures/rq5/rq5_determinization.html"],
+        description="RQ5 determinization dashboard."),
     Entrypoint("viz-supp", "Cruscotto supplementare", "Supplementary dashboard", CAT.VIZ,
         [PY, "-m", "src.viz.plot_ft_geometry_dynamics"],
         inputs=[R / "rq1_emergence/dynamic/rq1_dynamics.csv"],
@@ -292,14 +292,14 @@ RITES: dict[str, list[Step]] = {
                       "--model_path": f"data/processed/checkpoints/checkpoint-{s}",
                       "--loading_strategy": "peft"}) for s in CKPTS]
         + [("gsm8k", {"--tag": "final", "--model_path": "AUTO_FINAL", "--loading_strategy": "peft"}),
-           ("rq4", {}), ("rq1-dyn", {}), ("viz-rq1", {}), ("viz-rq2", {}),
-           ("viz-rq3", {}), ("viz-rq4", {}), ("viz-supp", {})]
+           ("rq5", {}), ("rq1-dyn", {}), ("viz-rq1", {}), ("viz-rq2", {}),
+           ("viz-rq3", {}), ("viz-rq5", {}), ("viz-supp", {})]
     ),
     "solo_probing": [("rq2", {}), ("confound-sign", {}), ("confound-par", {}), ("viz-rq2", {})],
     "solo_geometria": [("rq1", {}), ("viz-rq1", {})],
-    "solo_rq4": [("rq4", {}), ("viz-rq4", {})],
+    "solo_rq5": [("rq5", {}), ("viz-rq5", {})],
     "solo_viz": [("viz-rq1", {}), ("viz-rq2", {}), ("viz-rq3", {}),
-                 ("viz-rq4", {}), ("viz-supp", {}), ("viz-pca", {})],
+                 ("viz-rq5", {}), ("viz-supp", {}), ("viz-pca", {})],
     "smoke_test": [("__pytest__", {})],
     "dataset_regen": [("regen", {"__flags__": ["--with-extraction", "--with-rq2", "--with-confounds"]})],
 }
@@ -307,7 +307,7 @@ RITE_DESC = {
     "cammino_completo": t("Pipeline a freddo, completa (GPU, lunghissima).", "Full cold-start pipeline (GPU)."),
     "solo_probing": t("Ri-sonda dai tensori base (CPU).", "Re-probe from base tensors (CPU)."),
     "solo_geometria": t("RQ1 dai tensori base (CPU).", "RQ1 from base tensors (CPU)."),
-    "solo_rq4": t("RQ4 da modello + checkpoint (GPU).", "RQ4 from model + checkpoints (GPU)."),
+    "solo_rq5": t("RQ5 da modello + checkpoint (GPU).", "RQ5 from model + checkpoints (GPU)."),
     "solo_viz": t("Ri-disegna tutti i cruscotti (CPU).", "Re-render all dashboards (CPU)."),
     "smoke_test": "pytest tests/ -q (CPU).",
     "dataset_regen": t("Ricostruisce dataset + downstream.", "Rebuild dataset + downstream."),
@@ -354,7 +354,7 @@ def drift_note(entry: Entrypoint) -> None:
 
 def drift_block_d6(entry: Entrypoint, argv: list[str]) -> bool:
     """D6 — refuse if total_training_steps absent. Loud even under --yes."""
-    if entry.key not in {"rq3", "rq4", "rq1-dyn", "gsm8k"}:
+    if entry.key not in {"rq3", "rq5", "rq1-dyn", "gsm8k"}:
         return False
     cfg = _argv_value(argv, "--config", RESOLVERS["--config"])
     if "total_training_steps" not in _flat_yaml(REPO_ROOT / cfg):
@@ -642,7 +642,7 @@ def _f(x) -> Optional[float]:
 
 def report(entry: Entrypoint) -> None:
     print(c("  ── " + t("responso", "report") + " ──", "bold"))
-    fn = {"rq2": _report_rq2, "rq1": _report_rq1, "rq3": _report_rq3, "rq4": _report_rq4,
+    fn = {"rq2": _report_rq2, "rq1": _report_rq1, "rq3": _report_rq3, "rq5": _report_rq5,
           "nf4": _report_nf4, "gsm8k": _report_gsm8k}.get(entry.key)
     try:
         fn() if fn else _report_generic(entry)
@@ -685,8 +685,8 @@ def _report_rq3() -> None:
     if accs:
         info(t("acc sonda: ", "probe acc: ") + f"{min(accs):.3f} → {max(accs):.3f}")
 
-def _report_rq4() -> None:
-    rows = _read_rows(REPO_ROOT / "results/rq4_determinization/determinization.csv")
+def _report_rq5() -> None:
+    rows = _read_rows(REPO_ROOT / "results/rq5_determinization/determinization.csv")
     steps = sorted({int(r["step"]) for r in rows if r.get("step", "").strip().lstrip("-").isdigit()})
     if not steps:
         return

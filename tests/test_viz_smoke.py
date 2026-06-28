@@ -73,9 +73,9 @@ def test_rq3_dashboard_renders(tmp_path, monkeypatch) -> None:
     assert (tmp_path / "results/figures/rq3/rq3_dashboard.html").exists()
 
 
-def _write_rq4_csv(root: Path) -> None:
-    rq4 = root / "results/rq4_determinization"
-    rq4.mkdir(parents=True, exist_ok=True)
+def _write_rq5_csv(root: Path) -> None:
+    rq5 = root / "results/rq5_determinization"
+    rq5.mkdir(parents=True, exist_ok=True)
     rows = []
     for cat in ("CAT-SIGN", "CAT-PARITY"):
         for step in (0, 2500, 12343):
@@ -87,17 +87,17 @@ def _write_rq4_csv(root: Path) -> None:
                 "p_first_token_mean": p, "p_correct_single": p,
                 "p_correct_single_ci_lo": p - 0.02, "p_correct_single_ci_hi": p + 0.02,
             })
-    pd.DataFrame(rows).to_csv(rq4 / "determinization.csv", index=False)
+    pd.DataFrame(rows).to_csv(rq5 / "determinization.csv", index=False)
 
 
-def test_rq4_dashboard_renders(tmp_path, monkeypatch) -> None:
+def test_rq5_dashboard_renders(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
-    _write_rq4_csv(tmp_path)
+    _write_rq5_csv(tmp_path)
     import importlib
-    import src.viz.plot_rq4_determinization as m
+    import src.viz.plot_rq5_determinization as m
     importlib.reload(m)
     m.main()
-    assert (tmp_path / "results/figures/rq4/rq4_determinization.html").exists()
+    assert (tmp_path / "results/figures/rq5/rq5_determinization.html").exists()
 
 
 def _write_rq2_accuracy_csv(root: Path) -> None:

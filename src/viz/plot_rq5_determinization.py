@@ -1,5 +1,5 @@
 """
-plot_rq4_determinization.py — RQ4 determinization dashboard.
+plot_rq5_determinization.py — RQ5 determinization dashboard.
 
 Three panels vs Training Step, one trace per math category:
   (1) next-token entropy ↓   (2) P(answer | single-token) ↑   (3) top1-top2 margin ↑
@@ -23,7 +23,7 @@ GSM8K_CSV = Path("results/rq2_probing/dynamic/trajectories_probing.csv")
 
 def setup_logger() -> logging.Logger:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-    return logging.getLogger("rq4_viz")
+    return logging.getLogger("rq5_viz")
 
 
 def _load_gsm8k() -> pd.DataFrame | None:
@@ -38,13 +38,13 @@ def _load_gsm8k() -> pd.DataFrame | None:
 
 def main() -> None:
     logger = setup_logger()
-    csv_path = Path("results/rq4_determinization/determinization.csv")
-    out_dir = Path("results/figures/rq4")
-    out_file = out_dir / "rq4_determinization.html"
+    csv_path = Path("results/rq5_determinization/determinization.csv")
+    out_dir = Path("results/figures/rq5")
+    out_file = out_dir / "rq5_determinization.html"
 
     if not csv_path.exists():
         raise FileNotFoundError(
-            f"Missing {csv_path}. Run run_rq4.py to generate the determinization data first."
+            f"Missing {csv_path}. Run run_rq5.py to generate the determinization data first."
         )
 
     df = pd.read_csv(csv_path).sort_values("step")
@@ -116,17 +116,17 @@ def main() -> None:
     fig.update_yaxes(title_text="Logit margin", row=1, col=3)
 
     fig.update_layout(
-        title="RQ4 — Behavioral determinization at the '=' token",
+        title="RQ5 — Behavioral determinization at the '=' token",
         height=520, width=1500, template="plotly_white", hovermode="x unified",
     )
 
     fig.write_html(str(out_file))
-    logger.info(f"RQ4 dashboard generated: {out_file}")
+    logger.info(f"RQ5 dashboard generated: {out_file}")
 
 
 if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        logging.getLogger("rq4_viz").error(f"Execution failed: {e}")
+        logging.getLogger("rq5_viz").error(f"Execution failed: {e}")
         sys.exit(1)

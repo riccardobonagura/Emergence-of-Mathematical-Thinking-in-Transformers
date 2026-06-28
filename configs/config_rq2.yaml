@@ -40,11 +40,11 @@ iso_floor_bootstrap_n: 200
 # via .get(key, <canonical>); declared here for traceability)
 rq3_trajectory_csv: results/rq2_probing/dynamic/trajectories_probing.csv
 
-# ── RQ4 determinization (run_rq4.py) ──────────────────────────────────────────
+# ── RQ5 determinization (run_rq5.py) ──────────────────────────────────────────
 # Inference-only sharpening of the "=" next-token distribution across checkpoints.
-# Both keys are optional — run_rq4 reads them via config.get with these defaults:
-#   rq4_batch_size : forward-pass batch over math stimuli (defaults to the model
+# Both keys are optional — run_rq5 reads them via config.get with these defaults:
+#   rq5_batch_size : forward-pass batch over math stimuli (defaults to the model
 #                    profile's extract_batch_size when omitted)
-#   rq4_output_dir : where determinization.csv + per-step JSON are written
-rq4_batch_size: 32
-rq4_output_dir: results/rq4_determinization
+#   rq5_output_dir : where determinization.csv + per-step JSON are written
+rq5_batch_size: 32
+rq5_output_dir: results/rq5_determinization

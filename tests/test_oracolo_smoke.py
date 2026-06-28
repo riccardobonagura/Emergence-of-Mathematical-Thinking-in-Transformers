@@ -42,15 +42,15 @@ CFG = REPO / "configs" / "config_rq2.yaml"
 
 KNOWN_KEYS = (
     "extract", "rq1", "rq2", "confound-sign", "confound-par", "train",
-    "loop", "rq3", "nf4", "gsm8k", "rq4", "rq1-dyn", "validate", "io-smoke",
+    "loop", "rq3", "nf4", "gsm8k", "rq5", "rq1-dyn", "validate", "io-smoke",
     "build-stim", "merge-stim", "regen", "ds-test", "cka-main", "iso-main",
-    "viz-rq1", "viz-rq2", "viz-rq3", "viz-rq4", "viz-supp", "viz-pca",
+    "viz-rq1", "viz-rq2", "viz-rq3", "viz-rq5", "viz-supp", "viz-pca",
     "gen-fix", "chk-iface",
 )
 assert len(KNOWN_KEYS) == 28
 
 COMPOSITE_RITES = (
-    "cammino_completo", "solo_probing", "solo_geometria", "solo_rq4",
+    "cammino_completo", "solo_probing", "solo_geometria", "solo_rq5",
     "solo_viz", "smoke_test", "dataset_regen",
 )
 
@@ -142,7 +142,7 @@ def test_drift_D6_fires(tmp_path):
     cfg = tmp_path / "no_total_steps.yaml"
     cfg.write_text(stripped, encoding="utf-8")
 
-    r = run_oracolo("--dry-run", "--run", "rq4", "--yes", "--", "--config", str(cfg))
+    r = run_oracolo("--dry-run", "--run", "rq5", "--yes", "--", "--config", str(cfg))
     out = _out(r)
     assert r.returncode == 3, f"D6 must refuse with rc=3, got {r.returncode}\n{out}"
     assert "d6" in out.lower(), f"D6 message absent\n{out}"
