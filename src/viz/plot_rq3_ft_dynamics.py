@@ -1,8 +1,8 @@
-"""plot_ft_geometry_dynamics.py — Supplementary dashboard (exploratory).
+"""plot_rq3_ft_dynamics.py — RQ3 dashboard: dynamics of the RQ1 geometry across fine-tuning.
 
-Visualizes how RQ1's descriptive geometry (cross-temporal CKA, inter-category CKA,
-ΔIso) co-moves with GSM8K across QLoRA checkpoints. This is an exploratory bridge
-between RQ1 and RQ3 — NOT confirmatory. Reads results/rq1_emergence/dynamic/rq1_dynamics.csv.
+Visualizes how RQ1's geometry (cross-temporal CKA, inter-category CKA, ΔIso) evolves
+and co-moves with GSM8K across QLoRA checkpoints (thesis RQ3 — dynamics of the RQ1
+geometry across FT). Reads results/rq3_ft_dynamics/rq3_dynamics.csv.
 """
 
 import json
@@ -15,13 +15,13 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-logger = logging.getLogger("ft_geometry_viz")
+logger = logging.getLogger("rq3_ft_viz")
 
-DYN_CSV = Path("results/rq1_emergence/dynamic/rq1_dynamics.csv")
+DYN_CSV = Path("results/rq3_ft_dynamics/rq3_dynamics.csv")
 ANN_CSV = Path("results/rq1_emergence/cka_results_annotated.csv")
 TRAJ_CSV = Path("results/rq4_drift/trajectories_probing.csv")
 NF4_JSON = Path("results/nf4_degradation/summary.json")
-OUT_HTML = Path("results/figures/supplementary_ft_dynamics.html")
+OUT_HTML = Path("results/figures/rq3/rq3_ft_dynamics.html")
 
 STEP_COLORS = ["#1f2937", "#2563eb", "#0891b2", "#059669", "#d97706", "#dc2626",
                "#7c3aed", "#db2777", "#65a30d", "#0d9488"]
@@ -38,7 +38,7 @@ def _intro(title: str, body_html: str) -> str:
 
 def main() -> None:
     if not DYN_CSV.exists():
-        logger.error(f"Missing {DYN_CSV}. Run run_rq1_dynamics.py first.")
+        logger.error(f"Missing {DYN_CSV}. Run run_rq3.py first.")
         raise FileNotFoundError(DYN_CSV)
 
     df = pd.read_csv(DYN_CSV)
@@ -79,13 +79,13 @@ def main() -> None:
         "Report magnitude, not coefficients."
     )
 
-    html_parts = ['<html><head><meta charset="utf-8"><title>Supplementary — FT geometry '
+    html_parts = ['<html><head><meta charset="utf-8"><title>RQ3 — FT geometry '
                   'dynamics</title></head><body style="background:#f8fafc">']
     html_parts.append(_intro(
-        "Supplementary — Fine-tuning geometry dynamics (exploratory bridge between RQ1 and RQ3)",
-        "<p><b>This is a supplementary, post-hoc exploratory analysis — not part of either "
-        "RQ's confirmatory design.</b> It recomputes RQ1's descriptive geometry on the QLoRA "
-        "checkpoints and shows how it co-moves with GSM8K. Evolutionary (layer-to-layer) CKA, "
+        "RQ3 — Dynamics of the RQ1 geometry across fine-tuning",
+        "<p><b>RQ3 tracks how RQ1's geometry evolves across fine-tuning.</b> It recomputes "
+        "RQ1's geometry on the QLoRA checkpoints and shows how it co-moves with GSM8K (the "
+        "GSM8K overlay is descriptive only, n=6). Evolutionary (layer-to-layer) CKA, "
         "the third RQ1 CKA notion, is intentionally out of scope here. Step 0 = base model; "
         f"steps {steps[1:]} are checkpoints (final_adapter = {steps[-1]}). All metrics use the "
         "same 3000 stimuli in identical order (hash-verified against the base).</p>"
@@ -134,7 +134,7 @@ def main() -> None:
         "fine-tuning <i>restructured</i> that layer's representation. Linear CKA is invariant "
         "to rotation and isotropic scaling — that invariance is the <b>feature</b> that lets "
         "it isolate genuine restructuring from mere rotation/rescaling, making it the "
-        "complement to RQ3's Frobenius drift (E-G-02). <b>CKA is a similarity, not a "
+        "complement to RQ4's Frobenius drift (E-G-02). <b>CKA is a similarity, not a "
         "divergence.</b></p>"
         f"<p><b>Noise reference (not a band):</b> step 0 is 1.0 by construction (base vs base). "
         f"There is <b>no apples-to-apples CKA noise band</b> for a cross-temporal comparison, "
@@ -142,7 +142,7 @@ def main() -> None:
         f"<i>different-unit</i> reference (E-F-03), the T16 NF4 quantization degradation is "
         f"mean relative Frobenius = <b>{t16_txt}</b> — a non-learning floor expressed in "
         f"Frobenius, NOT in 1−CKA, so compare only qualitatively. Observed max mean drift here "
-        f"is ≈{mean_drift.max():.3f} (1−CKA): most of RQ3's larger Frobenius drift is therefore "
+        f"is ≈{mean_drift.max():.3f} (1−CKA): most of RQ4's larger Frobenius drift is therefore "
         f"rotation/scaling, not restructuring.</p>"))
     add_fig(figA)
 

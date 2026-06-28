@@ -1,12 +1,12 @@
 #!/usr/bin/env python
-"""run_rq1_dynamics.py — Supplementary, post-hoc exploratory analysis.
+"""run_rq3.py — RQ3: dynamics of the RQ1 geometry across fine-tuning.
 
-Recomputes RQ1's descriptive geometry (ΔIso math vs ctrl, inter-category CKA) on the
-QLoRA checkpoints, plus a cross-temporal CKA(base → checkpoint) drift. This is an
-exploratory bridge between RQ1 and RQ3 — NOT part of either RQ's confirmatory design.
+Recomputes RQ1's geometry (ΔIso math vs ctrl, inter-category CKA) on the QLoRA
+checkpoints, plus a cross-temporal CKA(base → checkpoint) drift — tracking how the
+static RQ1 geometry evolves over the fine-tuning trajectory (thesis RQ3).
 
-Reuse-only: imports the existing metric functions; does not modify run_rq1.py, run_rq3.py,
-cka.py, or isotropy.py. Output: results/rq1_emergence/dynamic/rq1_dynamics.csv.
+Reuse-only: imports the existing metric functions; does not modify run_rq1.py, run_rq4.py,
+cka.py, or isotropy.py. Output: results/rq3_ft_dynamics/rq3_dynamics.csv.
 """
 
 import argparse
@@ -31,7 +31,7 @@ from src.probing.io_utils import (
 from src.probing.seeds import get_seed
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-logger = logging.getLogger("run_rq1_dynamics")
+logger = logging.getLogger("run_rq3")
 
 # Cross-temporal CKA subsample size (matches cka.py defaults; CKA stable for n >= 256).
 CT_SUBSAMPLE = 512
@@ -47,11 +47,11 @@ def stimuli_hash(metadata_path: Path) -> str:
 def resolve_step(dir_name: str, config: dict) -> int:
     """Parse the training step from a checkpoint dir name.
 
-    Mirrors run_rq3.py's convention: terminal adapter -> total_training_steps,
+    Mirrors run_rq4.py's convention: terminal adapter -> total_training_steps,
     otherwise the trailing integer of the (underscore-normalized) name.
     """
     if "final_adapter" in dir_name or "final_checkpoint" in dir_name:
-        # Derive the final step from the config, falling back to run_rq3's default.
+        # Derive the final step from the config, falling back to run_rq4's default.
         return int(config.get("total_training_steps", 2000))
     try:
         return int(dir_name.replace("_", "-").split("-")[-1])
@@ -61,7 +61,7 @@ def resolve_step(dir_name: str, config: dict) -> int:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Supplementary fine-tuning geometry dynamics")
+    parser = argparse.ArgumentParser(description="RQ3 fine-tuning geometry dynamics")
     parser.add_argument("--config", required=True, type=str,
                         help="Path to the master configuration YAML (e.g. configs/config_rq2.yaml)")
     args = parser.parse_args()
@@ -72,7 +72,7 @@ def main() -> None:
     global_seed = int(config["seed"])
     base_dir = Path("data/processed") / config["model_name"]
     ckpt_root = Path("data/processed/checkpoints_extracted")
-    out_dir = Path("results/rq1_emergence/dynamic")
+    out_dir = Path("results/rq3_ft_dynamics")
     out_dir.mkdir(parents=True, exist_ok=True)
 
     base_meta_path = base_dir / "metadata.json"
@@ -124,6 +124,7 @@ def main() -> None:
     N_total = categories.size
     ct_idx = subsample_indices(
         n_total=N_total, n_sub=CT_SUBSAMPLE,
+        # frozen: get_seed purpose string — renaming would change the derived seed, not an RQ label
         seed=get_seed(global_seed, "rq1_dynamics_crosstemporal", 0),
     )
     # Preload base cross-temporal subsamples once (float64, matching cka.py).
@@ -170,7 +171,7 @@ def main() -> None:
             })
         drift_by_step[step] = float(np.mean(drifts))
 
-    out_csv = out_dir / "rq1_dynamics.csv"
+    out_csv = out_dir / "rq3_dynamics.csv"
     _atomic_write_csv(out_csv, rows, list(rows[0].keys()))
     logger.info(f"Wrote {len(rows)} rows to {out_csv}.")
 

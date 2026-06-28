@@ -102,6 +102,7 @@ class Category(Enum):
     RQ1 = ("RQ1 · geometria", "△")
     RQ2 = ("RQ2 · probing", "⊕")
     FINETUNING = ("Fine-tuning", "🜚")
+    RQ3 = ("RQ3 · dinamiche FT", "⟳")
     RQ4 = ("RQ4 · deriva", "⇌")
     RQ5 = ("RQ5 · determinazione", "⚖")
     EVAL = ("Valutazione", "𝛴")
@@ -189,10 +190,10 @@ REGISTRY: list[Entrypoint] = [
         [PY, "run_rq1.py"], required_args=["--config"], inputs=[BASE],
         outputs=[R / "rq1_emergence", R / "rq1_emergence/cka_intercategory.npy"], cost="medium",
         description="DeltaIso + evolutionary/inter-category CKA + reviewer baselines."),
-    Entrypoint("rq1-dyn", "Geometria nel tempo", "RQ1 dynamics (suppl.)", CAT.RQ1,
-        [PY, "run_rq1_dynamics.py"], required_args=["--config"],
+    Entrypoint("rq3", "Geometria nel tempo", "RQ3 FT geometry dynamics", CAT.RQ3,
+        [PY, "run_rq3.py"], required_args=["--config"],
         inputs=[BASE, D / "checkpoints_extracted"],
-        outputs=[R / "rq1_emergence/dynamic/rq1_dynamics.csv"], cost="medium",
+        outputs=[R / "rq3_ft_dynamics/rq3_dynamics.csv"], cost="medium",
         description="Recompute RQ1 geometry + cross-temporal CKA per checkpoint."),
     Entrypoint("cka-main", "Dimostrazione CKA", "CKA self-demo", CAT.RQ1,
         [PY, "-m", "src.metrics.cka"], description="Standalone CKA __main__ self-demo."),
@@ -255,11 +256,11 @@ REGISTRY: list[Entrypoint] = [
         inputs=[R / "rq5_determinization/determinization.csv"],
         outputs=[R / "figures/rq5/rq5_determinization.html"],
         description="RQ5 determinization dashboard."),
-    Entrypoint("viz-supp", "Cruscotto supplementare", "Supplementary dashboard", CAT.VIZ,
-        [PY, "-m", "src.viz.plot_ft_geometry_dynamics"],
-        inputs=[R / "rq1_emergence/dynamic/rq1_dynamics.csv"],
-        outputs=[R / "figures/supplementary_ft_dynamics.html"],
-        description="Supplementary FT-geometry dashboard."),
+    Entrypoint("viz-rq3", "Cruscotto RQ3", "RQ3 dashboard", CAT.VIZ,
+        [PY, "-m", "src.viz.plot_rq3_ft_dynamics"],
+        inputs=[R / "rq3_ft_dynamics/rq3_dynamics.csv"],
+        outputs=[R / "figures/rq3/rq3_ft_dynamics.html"],
+        description="RQ3 FT-geometry dashboard."),
     Entrypoint("viz-pca", "Proiezione PCA/UMAP", "PCA/UMAP scatter", CAT.VIZ,
         [PY, "-m", "src.viz.pca_umap_viz"], optional_args={"--layers": "23", "--reducer": "pca"},
         inputs=[BASE], outputs=[R / "figures/pca"],
@@ -292,14 +293,14 @@ RITES: dict[str, list[Step]] = {
                       "--model_path": f"data/processed/checkpoints/checkpoint-{s}",
                       "--loading_strategy": "peft"}) for s in CKPTS]
         + [("gsm8k", {"--tag": "final", "--model_path": "AUTO_FINAL", "--loading_strategy": "peft"}),
-           ("rq5", {}), ("rq1-dyn", {}), ("viz-rq1", {}), ("viz-rq2", {}),
-           ("viz-rq4", {}), ("viz-rq5", {}), ("viz-supp", {})]
+           ("rq5", {}), ("rq3", {}), ("viz-rq1", {}), ("viz-rq2", {}),
+           ("viz-rq4", {}), ("viz-rq5", {}), ("viz-rq3", {})]
     ),
     "solo_probing": [("rq2", {}), ("confound-sign", {}), ("confound-par", {}), ("viz-rq2", {})],
     "solo_geometria": [("rq1", {}), ("viz-rq1", {})],
     "solo_rq5": [("rq5", {}), ("viz-rq5", {})],
     "solo_viz": [("viz-rq1", {}), ("viz-rq2", {}), ("viz-rq4", {}),
-                 ("viz-rq5", {}), ("viz-supp", {}), ("viz-pca", {})],
+                 ("viz-rq5", {}), ("viz-rq3", {}), ("viz-pca", {})],
     "smoke_test": [("__pytest__", {})],
     "dataset_regen": [("regen", {"__flags__": ["--with-extraction", "--with-rq2", "--with-confounds"]})],
 }
@@ -354,7 +355,7 @@ def drift_note(entry: Entrypoint) -> None:
 
 def drift_block_d6(entry: Entrypoint, argv: list[str]) -> bool:
     """D6 — refuse if total_training_steps absent. Loud even under --yes."""
-    if entry.key not in {"rq4", "rq5", "rq1-dyn", "gsm8k"}:
+    if entry.key not in {"rq4", "rq5", "rq3", "gsm8k"}:
         return False
     cfg = _argv_value(argv, "--config", RESOLVERS["--config"])
     if "total_training_steps" not in _flat_yaml(REPO_ROOT / cfg):
