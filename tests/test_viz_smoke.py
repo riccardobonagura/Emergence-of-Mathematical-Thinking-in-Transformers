@@ -36,8 +36,8 @@ def _write_rq1_csvs(root: Path) -> None:
     }).to_csv(rq1 / "isotropy_aggregated_balanced.csv", index=False)
 
 
-def _write_rq3_csv(root: Path) -> None:
-    dyn = root / "results/rq2_probing/dynamic"
+def _write_rq4_csv(root: Path) -> None:
+    dyn = root / "results/rq4_drift"
     dyn.mkdir(parents=True, exist_ok=True)
     rows = []
     for step in (0, 2500):
@@ -63,14 +63,14 @@ def test_rq1_dashboard_renders(tmp_path, monkeypatch) -> None:
     assert (tmp_path / "results/figures/rq1_emergence/rq1_emergence.html").exists()
 
 
-def test_rq3_dashboard_renders(tmp_path, monkeypatch) -> None:
+def test_rq4_dashboard_renders(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
-    _write_rq3_csv(tmp_path)
+    _write_rq4_csv(tmp_path)
     import importlib
-    import src.viz.plot_rq3_trajectory as m
+    import src.viz.plot_rq4_trajectory as m
     importlib.reload(m)
     m.main()
-    assert (tmp_path / "results/figures/rq3/rq3_dashboard.html").exists()
+    assert (tmp_path / "results/figures/rq4/rq4_dashboard.html").exists()
 
 
 def _write_rq5_csv(root: Path) -> None:

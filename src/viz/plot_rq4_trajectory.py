@@ -1,5 +1,5 @@
 """
-plot_rq3_trajectory.py — Dynamic Phase Visualization (RQ3).
+plot_rq4_trajectory.py — Dynamic Phase Visualization (RQ4).
 Generates an interactive Plotly dashboard to correlate internal geometric drift 
 with linear probing accuracy and external benchmark (GSM8K) performance.
 """
@@ -13,19 +13,19 @@ from plotly.subplots import make_subplots
 
 def setup_logger() -> logging.Logger:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-    return logging.getLogger("rq3_viz")
+    return logging.getLogger("rq4_viz")
 
 def main() -> None:
     logger = setup_logger()
-    csv_path = Path("results/rq2_probing/dynamic/trajectories_probing.csv")
-    out_dir = Path("results/figures/rq3")
-    out_file = out_dir / "rq3_dashboard.html"
+    csv_path = Path("results/rq4_drift/trajectories_probing.csv")
+    out_dir = Path("results/figures/rq4")
+    out_file = out_dir / "rq4_dashboard.html"
 
     # 1. Invariant: File Existence Check
     if not csv_path.exists():
         logger.error("FATAL: trajectories_probing.csv not found.")
         raise FileNotFoundError(
-            f"Missing {csv_path}. You must execute run_rq3.py (and optionally eval_gsm8k.py) "
+            f"Missing {csv_path}. You must execute run_rq4.py (and optionally eval_gsm8k.py) "
             "to generate the trajectory data before running the visualization."
         )
 
@@ -177,12 +177,12 @@ def main() -> None:
             method="update",
             args=[
                 {"visible": visibility},
-                {"title": f"RQ3 Dashboard — Active Trace: Layer {layer:02d}"}
+                {"title": f"RQ4 Dashboard — Active Trace: Layer {layer:02d}"}
             ]
         ))
 
     fig.update_layout(
-        title=f"RQ3 Dashboard — Active Trace: Layer {layers[0]:02d}",
+        title=f"RQ4 Dashboard — Active Trace: Layer {layers[0]:02d}",
         updatemenus=[dict(
             active=0,
             buttons=dropdown_buttons,
@@ -207,6 +207,6 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        logger = logging.getLogger("rq3_viz")
+        logger = logging.getLogger("rq4_viz")
         logger.error(f"Execution failed: {e}")
         sys.exit(1)

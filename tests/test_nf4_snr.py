@@ -37,6 +37,7 @@ def test_zero_floor_yields_null_snr_and_valid_json() -> None:
     assert "not computable" in interp
     # signal_to_noise_ratio must round-trip through JSON (no Infinity/NaN).
     summary = {
+        # frozen: serialized key in nf4_degradation/summary.json (T6 byte-preservation), not an RQ label
         "rq3_max_relative_drift": round(max_drift, 6) if max_drift is not None else None,
         "signal_to_noise_ratio": round(snr, 4) if snr is not None else None,
         "interpretation": interp,

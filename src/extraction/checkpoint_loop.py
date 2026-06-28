@@ -1,5 +1,5 @@
 """
-checkpoint_loop.py — driver for RQ3 dynamic evaluation.
+checkpoint_loop.py — driver for RQ4 dynamic evaluation.
 Iterates over saved LoRA checkpoints, merges weights, wraps in TransformerLens,
 extracts representations, and triggers the static probing validation.
 
@@ -48,7 +48,7 @@ def process_checkpoint(
     checkpoints_extracted_dir: Path,
     logger: logging.Logger
 ) -> None:
-    """Merge the LoRA adapter, extract states, and trigger RQ3 metric computation."""
+    """Merge the LoRA adapter, extract states, and trigger RQ4 metric computation."""
     logger.info(f"Processing checkpoint: {ckpt_dir.name}")
 
     # Clone the preloaded base model to avoid reloading from disk each time.
@@ -85,12 +85,12 @@ def process_checkpoint(
     torch.cuda.empty_cache()
     gc.collect()
 
-    # 5. Run RQ3 in a subprocess.
-    logger.info("Triggering run_rq3.py evaluation...")
+    # 5. Run RQ4 in a subprocess.
+    logger.info("Triggering run_rq4.py evaluation...")
     # Use sys.executable to stay inside the active conda/venv.
     cmd = [
         sys.executable,
-        "run_rq3.py",
+        "run_rq4.py",
         "--config", str(config_path),
         "--checkpoint_dir", str(out_dir)
     ]
@@ -99,7 +99,7 @@ def process_checkpoint(
         # Bound the subprocess to avoid an indefinite hang.
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
         if result.returncode != 0:
-            logger.error(f"run_rq3.py failed for {ckpt_dir.name}:\n{result.stderr}")
+            logger.error(f"run_rq4.py failed for {ckpt_dir.name}:\n{result.stderr}")
         else:
             logger.info(f"Evaluation complete for {ckpt_dir.name}.")
     except subprocess.TimeoutExpired:
@@ -109,7 +109,7 @@ def process_checkpoint(
 def main() -> None:
     logger = setup_logger()
 
-    parser = argparse.ArgumentParser(description="Checkpoint evaluation loop (RQ3)")
+    parser = argparse.ArgumentParser(description="Checkpoint evaluation loop (RQ4)")
     parser.add_argument("--config", required=True, type=str, help="Path to the configuration YAML file.")
     args = parser.parse_args()
 

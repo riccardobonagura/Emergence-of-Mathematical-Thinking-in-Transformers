@@ -1,8 +1,8 @@
 """
-rq3_drift_specificity.py — Standalone diagnostic: math-vs-ctrl drift specificity (post-RQ3).
+rq4_drift_specificity.py — Standalone diagnostic: math-vs-ctrl drift specificity (post-RQ4).
 
-Runs after RQ3, analogous to nf4_degradation.py and run_confound_checks.py: a standalone
-diagnostic, NOT invoked by the orchestrators. It reads the RQ3 trajectory CSV and, at a chosen
+Runs after RQ4, analogous to nf4_degradation.py and run_confound_checks.py: a standalone
+diagnostic, NOT invoked by the orchestrators. It reads the RQ4 trajectory CSV and, at a chosen
 training step, contrasts the RELATIVE geometric drift of the math subset against the ctrl subset
 per layer, then issues a specificity verdict — math-specific reorganization vs a global
 representational shift.
@@ -13,7 +13,7 @@ it reads as "the fraction of its own representation that moved". That makes math
 comparable even when their absolute magnitudes differ, and it is the only formulation comparable
 to the NF4 quantization floor reported by T16 (nf4_degradation.py).
 
-Dedup: in run_rq3.py the geometric drift is computed once per (step, layer) and copied onto both
+Dedup: in run_rq4.py the geometric drift is computed once per (step, layer) and copied onto both
 the sign and parity rows. Those columns are therefore identical across the two properties of the
 same (step, layer); we keep a single row per layer via drop_duplicates(['step', 'layer']).
 """
@@ -85,7 +85,7 @@ def classify_specificity(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="RQ3 math-vs-ctrl relative-drift specificity diagnostic (post-RQ3)."
+        description="RQ4 math-vs-ctrl relative-drift specificity diagnostic (post-RQ4)."
     )
     parser.add_argument("--config", required=True, type=str,
                         help="Path to operational config file (e.g., configs/config_rq2.yaml)")
@@ -97,14 +97,14 @@ def main() -> None:
         config = yaml.safe_load(f)
 
     traj_path = Path(config.get(
-        "rq3_trajectory_csv", "results/rq2_probing/dynamic/trajectories_probing.csv"
+        "rq4_trajectory_csv", "results/rq4_drift/trajectories_probing.csv"
     ))
     out_dir = traj_path.parent
     setup_logging(out_dir)
 
     if not traj_path.exists():
         raise FileNotFoundError(
-            f"RQ3 trajectory CSV missing: {traj_path}. Run run_rq3.py first to produce it."
+            f"RQ4 trajectory CSV missing: {traj_path}. Run run_rq4.py first to produce it."
         )
 
     df = pd.read_csv(traj_path)
@@ -112,7 +112,7 @@ def main() -> None:
     missing = [c for c in REQUIRED_COLUMNS if c not in df.columns]
     if missing:
         raise ValueError(
-            f"RQ3 trajectory CSV {traj_path} is missing required columns: {missing}. "
+            f"RQ4 trajectory CSV {traj_path} is missing required columns: {missing}. "
             f"Present columns: {df.columns.tolist()}."
         )
 
@@ -159,7 +159,7 @@ def main() -> None:
     verdict = classify_specificity(per_layer, mean_math_rel, mean_ctrl_rel)
 
     # ── Readable per-layer table ──
-    logger.info(f"RQ3 drift specificity @ step {target_step} ({n_layers} layers)")
+    logger.info(f"RQ4 drift specificity @ step {target_step} ({n_layers} layers)")
     logger.info(f"{'layer':>5} | {'math_rel':>10} | {'ctrl_rel':>10} | {'math/ctrl':>10} | math>ctrl")
     logger.info("-" * 58)
     for r in per_layer:

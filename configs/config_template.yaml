@@ -1,4 +1,4 @@
-# config_template.yaml — canonical configuration for run_rq2.py and run_rq3.py.
+# config_template.yaml — canonical configuration for run_rq2.py and run_rq4.py.
 # Copy to configs/config.yaml and fill in the values marked with <...>.
 
 # ── Identifiers ───────────────────────────────────────────────────────────────
@@ -17,7 +17,7 @@ n_jobs:      -1                      # joblib: -1 = use all available cores
 # Each entry defines one linear probe.
 # label_field: key inside stimulus["labels"] in dataset_master_v5.jsonl
 # category:    dataset category to filter on (prevents cross-category contamination)
-# type:        "binary" | "multiclass" — determines inference in run_rq3.py
+# type:        "binary" | "multiclass" — determines inference in run_rq4.py
 properties:
   sign:
     label_field: "sign"
@@ -38,7 +38,7 @@ multiclass_strategy: "ovr"          # Accepted but unused for binary probes (v5)
 bootstrap_n_samples: 2000
 bootstrap_ci:        0.95
 
-# ── RQ3 dynamic evaluation ───────────────────────────────────────────────────
+# ── RQ4 dynamic evaluation ───────────────────────────────────────────────────
 eval_subset_size:    200             # stimuli sampled for geometric drift
 
 # ── RQ5 determinization (run_rq5.py) ─────────────────────────────────────────

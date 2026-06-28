@@ -19,7 +19,7 @@ logger = logging.getLogger("ft_geometry_viz")
 
 DYN_CSV = Path("results/rq1_emergence/dynamic/rq1_dynamics.csv")
 ANN_CSV = Path("results/rq1_emergence/cka_results_annotated.csv")
-TRAJ_CSV = Path("results/rq2_probing/dynamic/trajectories_probing.csv")
+TRAJ_CSV = Path("results/rq4_drift/trajectories_probing.csv")
 NF4_JSON = Path("results/nf4_degradation/summary.json")
 OUT_HTML = Path("results/figures/supplementary_ft_dynamics.html")
 

@@ -102,7 +102,7 @@ class Category(Enum):
     RQ1 = ("RQ1 · geometria", "△")
     RQ2 = ("RQ2 · probing", "⊕")
     FINETUNING = ("Fine-tuning", "🜚")
-    RQ3 = ("RQ3 · deriva", "⇌")
+    RQ4 = ("RQ4 · deriva", "⇌")
     RQ5 = ("RQ5 · determinazione", "⚖")
     EVAL = ("Valutazione", "𝛴")
     VIZ = ("Visualizzazioni", "◐")
@@ -184,7 +184,7 @@ REGISTRY: list[Entrypoint] = [
         [PY, "-m", "src.extraction.checkpoint_loop"], required_args=["--config"],
         inputs=[D / "checkpoints", DS], outputs=[D / "checkpoints_extracted"],
         gpu_required=True, cost="very_long",
-        description="Merge adapter -> re-extract -> run_rq3 per checkpoint."),
+        description="Merge adapter -> re-extract -> run_rq4 per checkpoint."),
     Entrypoint("rq1", "Geometria dell'emergenza", "RQ1 emergence geometry", CAT.RQ1,
         [PY, "run_rq1.py"], required_args=["--config"], inputs=[BASE],
         outputs=[R / "rq1_emergence", R / "rq1_emergence/cka_intercategory.npy"], cost="medium",
@@ -217,9 +217,9 @@ REGISTRY: list[Entrypoint] = [
         [PY, "-m", "src.finetuning.train_qlora"], required_args=["--config", "--lora_config"],
         inputs=[CFG, LORA], outputs=[D / "checkpoints"], gpu_required=True, cost="very_long",
         description="QLoRA NF4 r=16 QKV-only, 1 epoch on MetaMathQA."),
-    Entrypoint("rq3", "Deriva di Frobenius", "RQ3 drift trajectory", CAT.RQ3,
-        [PY, "run_rq3.py"], required_args=["--config", "--checkpoint_dir"],
-        inputs=[BASE, R2 / "weights"], outputs=[R2 / "dynamic/trajectories_probing.csv"],
+    Entrypoint("rq4", "Deriva di Frobenius", "RQ4 drift trajectory", CAT.RQ4,
+        [PY, "run_rq4.py"], required_args=["--config", "--checkpoint_dir"],
+        inputs=[BASE, R2 / "weights"], outputs=[R / "rq4_drift/trajectories_probing.csv"],
         description="Frozen-probe acc + dual Frobenius drift per step."),
     Entrypoint("rq5", "Determinazione al segno '='", "RQ5 determinization", CAT.RQ5,
         [PY, "run_rq5.py"], required_args=["--config"], inputs=[CFG, DS],
@@ -245,10 +245,10 @@ REGISTRY: list[Entrypoint] = [
         inputs=[R2 / "accuracy_metrics_corrected.csv"],
         outputs=[R / "figures/rq2/accuracy_curves.html"],
         description="Probe accuracy curves + effect-size bars."),
-    Entrypoint("viz-rq3", "Cruscotto RQ3", "RQ3 dashboard", CAT.VIZ,
-        [PY, "-m", "src.viz.plot_rq3_trajectory"],
-        inputs=[R2 / "dynamic/trajectories_probing.csv"],
-        outputs=[R / "figures/rq3/rq3_dashboard.html"],
+    Entrypoint("viz-rq4", "Cruscotto RQ4", "RQ4 dashboard", CAT.VIZ,
+        [PY, "-m", "src.viz.plot_rq4_trajectory"],
+        inputs=[R / "rq4_drift/trajectories_probing.csv"],
+        outputs=[R / "figures/rq4/rq4_dashboard.html"],
         description="3-panel trajectory/drift dashboard."),
     Entrypoint("viz-rq5", "Cruscotto RQ5", "RQ5 dashboard", CAT.VIZ,
         [PY, "-m", "src.viz.plot_rq5_determinization"],
@@ -293,12 +293,12 @@ RITES: dict[str, list[Step]] = {
                       "--loading_strategy": "peft"}) for s in CKPTS]
         + [("gsm8k", {"--tag": "final", "--model_path": "AUTO_FINAL", "--loading_strategy": "peft"}),
            ("rq5", {}), ("rq1-dyn", {}), ("viz-rq1", {}), ("viz-rq2", {}),
-           ("viz-rq3", {}), ("viz-rq5", {}), ("viz-supp", {})]
+           ("viz-rq4", {}), ("viz-rq5", {}), ("viz-supp", {})]
     ),
     "solo_probing": [("rq2", {}), ("confound-sign", {}), ("confound-par", {}), ("viz-rq2", {})],
     "solo_geometria": [("rq1", {}), ("viz-rq1", {})],
     "solo_rq5": [("rq5", {}), ("viz-rq5", {})],
-    "solo_viz": [("viz-rq1", {}), ("viz-rq2", {}), ("viz-rq3", {}),
+    "solo_viz": [("viz-rq1", {}), ("viz-rq2", {}), ("viz-rq4", {}),
                  ("viz-rq5", {}), ("viz-supp", {}), ("viz-pca", {})],
     "smoke_test": [("__pytest__", {})],
     "dataset_regen": [("regen", {"__flags__": ["--with-extraction", "--with-rq2", "--with-confounds"]})],
@@ -354,7 +354,7 @@ def drift_note(entry: Entrypoint) -> None:
 
 def drift_block_d6(entry: Entrypoint, argv: list[str]) -> bool:
     """D6 — refuse if total_training_steps absent. Loud even under --yes."""
-    if entry.key not in {"rq3", "rq5", "rq1-dyn", "gsm8k"}:
+    if entry.key not in {"rq4", "rq5", "rq1-dyn", "gsm8k"}:
         return False
     cfg = _argv_value(argv, "--config", RESOLVERS["--config"])
     if "total_training_steps" not in _flat_yaml(REPO_ROOT / cfg):
@@ -387,20 +387,20 @@ def drift_resolve_d8(entry: Entrypoint, overrides: dict, ctx: "Ctx") -> None:
             overrides["--model_path"] = str(base / "final_checkpoint")
 
 def drift_check_d11(entry: Entrypoint, overrides: dict, ctx: "Ctx") -> list[Step]:
-    """D11 — gsm8k on a checkpoint needs rq3 rows for that step first."""
+    """D11 — gsm8k on a checkpoint needs rq4 rows for that step first."""
     if entry.key != "gsm8k":
         return []
     m = re.match(r"ckpt_(\d+)$", overrides.get("--tag", ""))
     if not m:
         return []
     step = int(m.group(1))
-    traj = REPO_ROOT / "results/rq2_probing/dynamic/trajectories_probing.csv"
+    traj = REPO_ROOT / "results/rq4_drift/trajectories_probing.csv"
     if traj.exists() and any(str(r.get("step", "")).strip() == str(step) for r in _read_rows(traj)):
         return []
     warn("drift D11: " + t(f"trajectories_probing.csv non ha righe per step={step}; gsm8k fonderebbe nel vuoto.",
                            f"trajectories_probing.csv has no rows for step={step}; gsm8k would merge onto nothing."))
-    if ask(t("Concatenare rq3 prima di gsm8k?", "Chain rq3 before gsm8k?"), ["sì", "no"], "sì", ctx) == "sì":
-        return [("rq3", {"--checkpoint_dir": f"data/processed/checkpoints_extracted/checkpoint-{step}"})]
+    if ask(t("Concatenare rq4 prima di gsm8k?", "Chain rq4 before gsm8k?"), ["sì", "no"], "sì", ctx) == "sì":
+        return [("rq4", {"--checkpoint_dir": f"data/processed/checkpoints_extracted/checkpoint-{step}"})]
     return []
 
 # ─── Pre-flight ─────────────────────────────────────────────────────────────
@@ -642,7 +642,7 @@ def _f(x) -> Optional[float]:
 
 def report(entry: Entrypoint) -> None:
     print(c("  ── " + t("responso", "report") + " ──", "bold"))
-    fn = {"rq2": _report_rq2, "rq1": _report_rq1, "rq3": _report_rq3, "rq5": _report_rq5,
+    fn = {"rq2": _report_rq2, "rq1": _report_rq1, "rq4": _report_rq4, "rq5": _report_rq5,
           "nf4": _report_nf4, "gsm8k": _report_gsm8k}.get(entry.key)
     try:
         fn() if fn else _report_generic(entry)
@@ -674,8 +674,8 @@ def _report_rq1() -> None:
     if cka:
         info(t(f"CKA annotato: {len(cka)} righe", f"annotated CKA: {len(cka)} rows"))
 
-def _report_rq3() -> None:
-    rows = _read_rows(REPO_ROOT / "results/rq2_probing/dynamic/trajectories_probing.csv")
+def _report_rq4() -> None:
+    rows = _read_rows(REPO_ROOT / "results/rq4_drift/trajectories_probing.csv")
     rels = [(_f(r.get("geom_delta_math_rel")), r.get("step"), r.get("layer")) for r in rows]
     rels = [x for x in rels if x[0] is not None]
     if rels:

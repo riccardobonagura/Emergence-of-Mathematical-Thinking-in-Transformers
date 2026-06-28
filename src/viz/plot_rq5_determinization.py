@@ -6,7 +6,7 @@ Three panels vs Training Step, one trace per math category:
 all read at the "=" token (E-P-02: the model's expected-result distribution sharpening).
 
 GSM8K is an OPTIONAL descriptive overlay (n=6 checkpoints, no statistical claim) drawn
-only if results/rq2_probing/dynamic/trajectories_probing.csv carries a gsm8k_acc column.
+only if results/rq4_drift/trajectories_probing.csv carries a gsm8k_acc column.
 """
 
 import logging
@@ -18,7 +18,7 @@ import plotly.graph_objects as plotly_go
 from plotly.subplots import make_subplots
 
 CATEGORY_COLORS = {"CAT-SIGN": "#1f77b4", "CAT-PARITY": "#d62728"}
-GSM8K_CSV = Path("results/rq2_probing/dynamic/trajectories_probing.csv")
+GSM8K_CSV = Path("results/rq4_drift/trajectories_probing.csv")
 
 
 def setup_logger() -> logging.Logger:
@@ -27,7 +27,7 @@ def setup_logger() -> logging.Logger:
 
 
 def _load_gsm8k() -> pd.DataFrame | None:
-    """Per-step GSM8K accuracy, or None if the RQ3 trajectory has no gsm8k column."""
+    """Per-step GSM8K accuracy, or None if the RQ4 trajectory has no gsm8k column."""
     if not GSM8K_CSV.exists():
         return None
     traj = pd.read_csv(GSM8K_CSV)

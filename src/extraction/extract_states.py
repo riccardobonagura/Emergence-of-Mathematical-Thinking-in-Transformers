@@ -185,7 +185,7 @@ def load_stimuli(path: Path) -> list[dict]:
 def main() -> None:
     """Base (pre-fine-tuning) extraction runner feeding RQ1/RQ2.
 
-    Loads Pythia with the *same* HookedTransformer config as the RQ3 checkpoint
+    Loads Pythia with the *same* HookedTransformer config as the RQ4 checkpoint
     loop (fold_ln=True, fp16) so base-vs-checkpoint CKA/Frobenius drift stays
     comparable.
     """

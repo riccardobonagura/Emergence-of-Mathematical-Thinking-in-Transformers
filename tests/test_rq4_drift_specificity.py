@@ -1,4 +1,4 @@
-"""CPU-only tests for the RQ3 drift-specificity diagnostic.
+"""CPU-only tests for the RQ4 drift-specificity diagnostic.
 
 Covers the per-layer dedup (drift is duplicated across sign/parity rows) and the four
 branches of the specificity verdict ladder. No GPU, no RNG.
@@ -11,7 +11,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from src.eval.rq3_drift_specificity import classify_specificity, main
+from src.eval.rq4_drift_specificity import classify_specificity, main
 
 
 def _layer(layer: int, math_rel: float, ctrl_rel: float) -> dict:
@@ -80,7 +80,7 @@ def test_dedup_and_summary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
 
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
-        f"rq3_trajectory_csv: {csv_path}\ntotal_training_steps: 100\n",
+        f"rq4_trajectory_csv: {csv_path}\ntotal_training_steps: 100\n",
         encoding="utf-8",
     )
 
@@ -107,7 +107,7 @@ def test_missing_step_lists_available(tmp_path: Path, monkeypatch: pytest.Monkey
     }]).to_csv(csv_path, index=False)
 
     config_path = tmp_path / "config.yaml"
-    config_path.write_text(f"rq3_trajectory_csv: {csv_path}\n", encoding="utf-8")
+    config_path.write_text(f"rq4_trajectory_csv: {csv_path}\n", encoding="utf-8")
 
     monkeypatch.setattr(sys, "argv", ["prog", "--config", str(config_path), "--step", "999"])
     with pytest.raises(ValueError, match=r"Available steps: \[100\]"):

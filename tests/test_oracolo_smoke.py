@@ -42,9 +42,9 @@ CFG = REPO / "configs" / "config_rq2.yaml"
 
 KNOWN_KEYS = (
     "extract", "rq1", "rq2", "confound-sign", "confound-par", "train",
-    "loop", "rq3", "nf4", "gsm8k", "rq5", "rq1-dyn", "validate", "io-smoke",
+    "loop", "rq4", "nf4", "gsm8k", "rq5", "rq1-dyn", "validate", "io-smoke",
     "build-stim", "merge-stim", "regen", "ds-test", "cka-main", "iso-main",
-    "viz-rq1", "viz-rq2", "viz-rq3", "viz-rq5", "viz-supp", "viz-pca",
+    "viz-rq1", "viz-rq2", "viz-rq4", "viz-rq5", "viz-supp", "viz-pca",
     "gen-fix", "chk-iface",
 )
 assert len(KNOWN_KEYS) == 28

@@ -6,7 +6,7 @@ is generated. RQ5 tracks how that distribution sharpens across the QLoRA checkpo
 — next-token entropy ↓, top1-top2 logit margin ↑, P(answer) ↑ — as inference-only,
 correlative evidence of the fine-tuning trajectory (no causal claim, E-O-01).
 
-Steps mirror RQ3/GSM8K: {0 base, 2500, 5000, 7500, 10000, total_training_steps}.
+Steps mirror RQ4/GSM8K: {0 base, 2500, 5000, 7500, 10000, total_training_steps}.
 Step 0 is the un-merged base model; adapters are merged in memory. Deterministic over
 the full math set — no RNG. New config keys are read via config.get(key, default).
 """
@@ -62,7 +62,7 @@ def load_tokenizer(base_model_id: str):
 
 
 def build_hooked_model(base_hf, base_model_id: str, ckpt_dir: Path | None):
-    """Wrap base (step 0) or merged adapter in TransformerLens. Same flags as RQ3."""
+    """Wrap base (step 0) or merged adapter in TransformerLens. Same flags as RQ4."""
     hf = copy.deepcopy(base_hf)
     if ckpt_dir is not None:
         peft_model = PeftModel.from_pretrained(hf, str(ckpt_dir))

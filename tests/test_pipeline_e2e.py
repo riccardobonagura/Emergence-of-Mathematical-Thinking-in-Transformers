@@ -1,6 +1,6 @@
 """
 test_pipeline_e2e.py — End-to-End Integration and Statistical Unit Test Suite.
-Validates the full pipeline execution (RQ1 -> RQ2 -> RQ3) under strict config-driven constraints.
+Validates the full pipeline execution (RQ1 -> RQ2 -> RQ4 -> RQ5) under strict config-driven constraints.
 
 Enforces fixes TE-01 to TE-08: isolates test steps, hardens structural assertions,
 verifies category isolation invariants, and checks hyperplane denormalization algebra.
@@ -380,10 +380,10 @@ def test_propconfig_runtime_tolerates_missing_category(mock_pipeline_env) -> Non
     assert len(indices) == len(labels) and len(indices) > 0
 
 
-# ── SECTION 3 — RQ3 PIPELINE INTEGRATION RUNNER ────────────────────────────────
+# ── SECTION 3 — RQ4 PIPELINE INTEGRATION RUNNER ────────────────────────────────
 
-@patch("run_rq3.load_hidden_states")
-def test_rq3_pipeline(mock_load, mock_pipeline_env, monkeypatch) -> None:
+@patch("run_rq4.load_hidden_states")
+def test_rq4_pipeline(mock_load, mock_pipeline_env, monkeypatch) -> None:
     """Validates dynamic frozen probe evaluation and mathematical drift accumulation layers."""
     env = mock_pipeline_env
 
@@ -391,15 +391,15 @@ def test_rq3_pipeline(mock_load, mock_pipeline_env, monkeypatch) -> None:
         return torch.load(path, map_location="cpu", weights_only=True).float().numpy()
     mock_load.side_effect = side_effect
 
-    import run_rq3
+    import run_rq4
 
     monkeypatch.chdir(env["root"])
-    test_args = ["run_rq3.py", "--config", str(env["config"]), "--checkpoint_dir", str(env["ckpt_dir"])]
+    test_args = ["run_rq4.py", "--config", str(env["config"]), "--checkpoint_dir", str(env["ckpt_dir"])]
     with patch.object(sys, "argv", test_args):
-        run_rq3.main()
+        run_rq4.main()
 
-    trajectory_csv = env["out_rq2"] / "dynamic/trajectories_probing.csv"
-    assert trajectory_csv.exists(), "RQ3 trajectory logs missing from output directory."
+    trajectory_csv = env["root"] / "results/rq4_drift/trajectories_probing.csv"
+    assert trajectory_csv.exists(), "RQ4 trajectory logs missing from output directory."
 
     df = pd.read_csv(trajectory_csv)
 

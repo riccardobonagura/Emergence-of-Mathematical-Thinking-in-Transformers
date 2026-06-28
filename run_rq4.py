@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""run_rq3.py — RQ3 orchestrator: frozen probe evaluation on QLoRA checkpoints."""
+"""run_rq4.py — RQ4 orchestrator: frozen probe evaluation on QLoRA checkpoints."""
 
 import argparse
 import json
@@ -19,10 +19,10 @@ from src.probing.io_utils import (MetadataHandler, setup_logging,
 from src.probing.seeds import get_seed
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-logger = logging.getLogger("run_rq3")
+logger = logging.getLogger("run_rq4")
 
 
-class RQ3TrajectoryRow(TypedDict):
+class RQ4TrajectoryRow(TypedDict):
     """Per-layer, per-property row in trajectories_probing.csv (ARCH-03)."""
     step: int
     layer: int
@@ -51,13 +51,13 @@ def compute_geometric_drift(H_ckpt: np.ndarray, H_base: np.ndarray) -> tuple[flo
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="RQ3 dynamic probing")
+    parser = argparse.ArgumentParser(description="RQ4 dynamic probing")
     parser.add_argument("--config",         required=True)
     parser.add_argument("--checkpoint_dir", required=True,
                         help="Directory of per-layer .pt tensors for this checkpoint")
     args = parser.parse_args()
 
-    # RQ3-04: Explicit UTF-8 configuration reading forced
+    # RQ4-04: Explicit UTF-8 configuration reading forced
     with open(args.config, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
 
@@ -65,7 +65,7 @@ def main() -> None:
     logger     = setup_logging(output_dir)
     ckpt_path  = Path(args.checkpoint_dir)
 
-    # ── RQ3-01 & RQ3-01b: EXPLICIT STEP-PARSING RESOLUTION LOOP ───────────────
+    # ── RQ4-01 & RQ4-01b: EXPLICIT STEP-PARSING RESOLUTION LOOP ───────────────
     # Neutralizes the underscore splitting defect which flattened checkpoint steps to zero.
     stem = ckpt_path.name
     if "final_checkpoint" in stem or "final_adapter" in stem:
@@ -86,7 +86,7 @@ def main() -> None:
     meta = MetadataHandler(model_dir / "metadata.json")
     n_layers = meta.get_n_layers()
 
-    # ── RQ3-05: REPRODUCTION CONFIGURATION SEED INTEGRITY GUARD ───────────────
+    # ── RQ4-05: REPRODUCTION CONFIGURATION SEED INTEGRITY GUARD ───────────────
     # Verifies if frozen weights are aligned with current evaluation matrices setups
     config_hash_file = output_dir / "weights" / "rq2_config_hash.json"
     if config_hash_file.exists():
@@ -105,7 +105,7 @@ def main() -> None:
         for field in {pc["label_field"] for pc in config["properties"].values()}
     }
 
-    # ── RQ3-02: REPRESENTATIONAL DRIFT MANIFOLD SEPARATION (B-09) ─────────────
+    # ── RQ4-02: REPRESENTATIONAL DRIFT MANIFOLD SEPARATION (B-09) ─────────────
     # Isolate mathematical sub-spaces from linguistic variants to prevent noise contamination
     categories = np.array(meta.data.get("categories", []))
     math_idx_global = np.where(np.isin(categories, list(MATH_CATS)))[0]
@@ -117,7 +117,7 @@ def main() -> None:
     drift_idx_math = rng_drift.choice(math_idx_global, size=min(eval_size, len(math_idx_global)), replace=False)
     drift_idx_ctrl = rng_drift.choice(ctrl_idx_global, size=min(eval_size, len(ctrl_idx_global)), replace=False)
 
-    results: list[RQ3TrajectoryRow] = []
+    results: list[RQ4TrajectoryRow] = []
 
     for l in range(n_layers):
         H_base = load_hidden_states(model_dir / f"layer_{l:02d}.pt")
@@ -159,12 +159,13 @@ def main() -> None:
                 "geom_delta_ctrl_rel":  round(geom_delta_ctrl_rel, 6),
             })
 
-    # ── RQ3-03: DECOUPLED ACCURACY TRAJECTORY LOGS TARGETING (B-11) ───────────
-    # Outputs strictly to trajectories_probing.csv to remove pd.NA unaligned column corruptions
+    # ── RQ4-03: DECOUPLED ACCURACY TRAJECTORY LOGS TARGETING (B-11) ───────────
+    # Outputs strictly to trajectories_probing.csv to remove pd.NA unaligned column corruptions.
+    # Write base is the RQ4 drift dir (config rq4_trajectory_csv); the weights/test_indices
+    # reads above stay under output_dir (= results/rq2_probing), which are RQ2 inputs RQ4 consumes.
     df      = pd.DataFrame(results)
-    dyn_dir = output_dir / "dynamic"
-    dyn_dir.mkdir(parents=True, exist_ok=True)
-    traj    = dyn_dir / "trajectories_probing.csv"
+    traj    = Path(config.get("rq4_trajectory_csv", "results/rq4_drift/trajectories_probing.csv"))
+    traj.parent.mkdir(parents=True, exist_ok=True)
 
     if traj.exists():
         old = pd.read_csv(traj)

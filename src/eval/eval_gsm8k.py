@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-eval_gsm8k.py — Dynamic Evaluation Layer (RQ3).
+eval_gsm8k.py — Dynamic Evaluation Layer (RQ4).
 Executes strictly controlled 0-shot evaluation on GSM8K.
 Enforces Binomial Confidence Intervals and NaN-safe trajectory updates.
 """
@@ -72,7 +72,7 @@ def append_to_trajectory(step: int, acc: float, ci_lower: float, ci_upper: float
 
     if not csv_path.exists():
         # If trajectories doesn't exist yet, we can't append external metrics safely.
-        # Wait for run_rq3.py to initialize it with geometric data.
+        # Wait for run_rq4.py to initialize it with geometric data.
         logging.warning(f"Trajectory file {csv_path} not found. GSM8K metrics will be saved in JSON only.")
         return
 
@@ -86,7 +86,7 @@ def append_to_trajectory(step: int, acc: float, ci_lower: float, ci_upper: float
     # Update only the rows matching the current step
     mask = df["step"] == step
     if not mask.any():
-        logging.warning(f"Step {step} not found in {csv_path}. Run run_rq3.py for this step first.")
+        logging.warning(f"Step {step} not found in {csv_path}. Run run_rq4.py for this step first.")
         return
 
     df.loc[mask, "gsm8k_acc"] = acc
@@ -200,7 +200,7 @@ def main() -> None:
 
     # Append to the trajectory CSV.
     step = parse_step_from_tag(args.tag, config)
-    csv_path = Path("results/rq2_probing/dynamic/trajectories_probing.csv")
+    csv_path = Path("results/rq4_drift/trajectories_probing.csv")
     append_to_trajectory(step, accuracy, ci_lo, ci_hi, csv_path)
     logger.info(f"Trajectory alignment completed for step {step}")
 
