@@ -19,16 +19,17 @@ pip install -r requirements.txt
 pytest tests/                          # CPU-only, no GPU required
 python run_rq1.py --config configs/config_rq2.yaml
 python run_rq2.py --config configs/config_rq2.yaml
-python run_rq3.py --config configs/config_rq2.yaml --checkpoint_dir data/processed/checkpoints_extracted/<ckpt>
+python run_rq4.py --config configs/config_rq2.yaml --checkpoint_dir data/processed/checkpoints_extracted/<ckpt>
 python -m src.extraction.extract_states                                      # GPU: base-model states
 python -m src.finetuning.train_qlora                                         # GPU: QLoRA NF4 fine-tune
-python -m src.extraction.checkpoint_loop --config configs/config_rq2.yaml    # GPU: merge+re-extract+run_rq3 per ckpt
+python -m src.extraction.checkpoint_loop --config configs/config_rq2.yaml    # GPU: merge+re-extract+run_rq4 per ckpt
 python -m src.eval.nf4_degradation --config configs/config_rq2.yaml          # GPU: NF4 degradation baseline (T16)
 GSM8K_BATCH_SIZE=16 python -m src.eval.eval_gsm8k --config configs/config_rq2.yaml \
     --tag <tag> --model_path <path> --loading_strategy {peft|merged_direct}  # GPU: 0-shot GSM8K
-python -m src.viz.plot_rq3_trajectory                                        # RQ3 dashboard (CPU)
-python run_rq1_dynamics.py --config configs/config_rq2.yaml                   # CPU: supplementary FT geometry dynamics
-python -m src.viz.plot_ft_geometry_dynamics                                  # supplementary dashboard (CPU)
+python run_rq5.py --config configs/config_rq2.yaml                            # GPU: RQ5 determinization at "="
+python -m src.viz.plot_rq4_trajectory                                        # RQ4 dashboard (CPU)
+python run_rq3.py --config configs/config_rq2.yaml                            # CPU: RQ3 FT geometry dynamics
+python -m src.viz.plot_rq3_ft_dynamics                                       # RQ3 dashboard (CPU)
 ```
 
 ## Authority order (conflicts resolved top→bottom)
@@ -62,10 +63,10 @@ probing/    seeds.py, pipeline.py, directions.py, stats.py, probing_dataset.py,
 engine.py, io_utils.py, run_confound_checks.py, run_parity_confound_checks.py
 finetuning/ train_qlora.py
 eval/       eval_gsm8k.py, nf4_degradation.py
-viz/        plot_rq1_emergence.py, plot_rq3_trajectory.py, plot_ft_geometry_dynamics.py,
+viz/        plot_rq1_emergence.py, plot_rq4_trajectory.py, plot_rq3_ft_dynamics.py,
 pca_umap_viz.py, probing_viz.py
 utils/      validate_configs.py, io_smoke_test.py
-run_rq1.py, run_rq2.py, run_rq3.py   # checkpoint loop is src/extraction/checkpoint_loop.py (no root copy)
+run_rq1.py, run_rq2.py, run_rq3.py, run_rq4.py, run_rq5.py   # checkpoint loop is src/extraction/checkpoint_loop.py (no root copy)
 tests/test_pipeline_e2e.py
 
 ## Pipeline sequence
@@ -75,17 +76,17 @@ tests/test_pipeline_e2e.py
 4. RQ2 → linear probing sign/parity → `results/rq2_probing/` (weights, accuracy, direction angles)
 5. Fine-tuning → QLoRA NF4 on MetaMathQA → `data/processed/checkpoints/` (4 ckpts + `final_adapter`, step 12343)
 6. Checkpoint loop → merge adapter → re-extract → `data/processed/checkpoints_extracted/`
-7. RQ3 → frozen probe on checkpoints + dual Frobenius drift → `results/rq2_probing/dynamic/trajectories_probing.csv`
+7. RQ4 → frozen probe on checkpoints + dual Frobenius drift → `results/rq4_drift/trajectories_probing.csv`
 8. NF4 degradation baseline (T16) → bf16-ref vs NF4 per-layer Frobenius/cosine → `results/nf4_degradation/`
 9. GSM8K 0-shot eval → per checkpoint (baseline + 4 ckpts + final_adapter) → `results/gsm8k/gsm8k_<tag>.json`,
    merged into the step 7 trajectory CSV (`gsm8k_acc`, `gsm8k_ci_*`)
-10. Visualization → `src/viz/` dashboards (RQ1 emergence, RQ3 trajectory) → `results/figures/`
+10. Visualization → `src/viz/` dashboards (RQ1 emergence, RQ4 trajectory) → `results/figures/`
 
-Supplementary (exploratory bridge between RQ1 and RQ3 — NOT an RQ, no confirmatory claim):
-- `run_rq1_dynamics.py` recomputes RQ1 geometry (ΔIso, inter-category CKA) + cross-temporal
-  CKA(base→ckpt) on the extracted checkpoints → `results/rq1_emergence/dynamic/rq1_dynamics.csv`
-  (reuse-only: no edits to run_rq1/run_rq3/cka/isotropy). Dashboard via
-  `src.viz.plot_ft_geometry_dynamics` → `results/figures/supplementary_ft_dynamics.html`.
+RQ3 — FT geometry dynamics (dynamics of the RQ1 geometry across fine-tuning):
+- `run_rq3.py` recomputes RQ1 geometry (ΔIso, inter-category CKA) + cross-temporal
+  CKA(base→ckpt) on the extracted checkpoints → `results/rq3_ft_dynamics/rq3_dynamics.csv`
+  (reuse-only: no edits to run_rq1/run_rq4/cka/isotropy). Dashboard via
+  `src.viz.plot_rq3_ft_dynamics` → `results/figures/rq3/rq3_ft_dynamics.html`.
   GSM8K overlays are descriptive only (n=6); evolutionary layer-to-layer CKA out of scope.
 
 ## Data layout
@@ -102,7 +103,7 @@ data/processed/
 - `ModelProfile` TypedDict: required/optional split — `hf_path`, `target_modules` always required
 - `PropConfig` TypedDict: `label_field` and `type` required, `category` optional
 - `LayerResult` TypedDict: all metric fields explicitly typed in `engine.py`
-- `rq2_config_hash.json`: saved by `run_rq2.py` after weights, verified by `run_rq3.py`
+- `rq2_config_hash.json`: saved by `run_rq2.py` after weights, verified by `run_rq4.py`
 
 ## Testing
 `tests/test_pipeline_e2e.py` — full RQ1→RQ2→RQ3 on synthetic CPU data, no GPU needed.

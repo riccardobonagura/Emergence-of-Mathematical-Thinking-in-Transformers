@@ -22,21 +22,21 @@ flowchart LR
         WTS["Frozen probe weights (w,b)<br/>weights/*.npy + rq2_config_hash.json"]
     end
     
-    subgraph RQ3 ["<span style='background:#1f2937; color:#fff; padding:6px 12px; border-radius:6px; font-size:14px;'><b>RQ3 — fine-tuning dynamics (accuracy + drift)</b></span>"]
+    subgraph RQ4 ["<span style='background:#1f2937; color:#fff; padding:6px 12px; border-radius:6px; font-size:14px;'><b>RQ4 — fine-tuning dynamics (accuracy + drift)</b></span>"]
         direction TB
-        R3ACC["Frozen-probe acc trajectory<br/>dynamic/trajectories_probing.csv<br/><i>sign 0.994 → 0.739</i>"]
+        R3ACC["Frozen-probe acc trajectory<br/>rq4_drift/trajectories_probing.csv<br/><i>sign 0.994 → 0.739</i>"]
         R3DRIFT["Dual Frobenius drift<br/>same CSV<br/><i>rel math max 0.690 @ L9 (terminal step)</i>"]
     end
 
-    subgraph RQ4 ["<span style='background:#1f2937; color:#fff; padding:6px 12px; border-radius:6px; font-size:14px;'><b>RQ4 — behavioral determinization at '=' (inference-only)</b></span>"]
+    subgraph RQ5 ["<span style='background:#1f2937; color:#fff; padding:6px 12px; border-radius:6px; font-size:14px;'><b>RQ5 — behavioral determinization at '=' (inference-only)</b></span>"]
         direction TB
-        R4DET["Determinization metrics per (step, category)<br/>rq4_determinization/determinization.csv<br/><i>entropy ↓ · top1−top2 margin ↑ · P(answer) ↑</i>"]
+        R4DET["Determinization metrics per (step, category)<br/>rq5_determinization/determinization.csv<br/><i>entropy ↓ · top1−top2 margin ↑ · P(answer) ↑</i>"]
         R4SINGLE["Single-token-restricted entropy/margin<br/>same CSV (*_single columns)<br/><i>isolates CAT-SIGN digit half from sign-token half (B6)</i>"]
     end
     
-    subgraph SUPP ["<span style='background:#1f2937; color:#fff; padding:6px 12px; border-radius:6px; font-size:14px;'><b>Supplementary — FT geometry dynamics</b></span>"]
+    subgraph RQ3 ["<span style='background:#1f2937; color:#fff; padding:6px 12px; border-radius:6px; font-size:14px;'><b>RQ3 — FT geometry dynamics (dynamics of the RQ1 geometry)</b></span>"]
         direction TB
-        SUPPCSV["RQ1 geometry recomputed per checkpoint<br/>rq1_emergence/dynamic/rq1_dynamics.csv<br/><i>ΔIso, inter-cat CKA, cross-temporal CKA(base→ckpt)</i>"]
+        SUPPCSV["RQ1 geometry recomputed per checkpoint<br/>rq3_ft_dynamics/rq3_dynamics.csv<br/><i>ΔIso, inter-cat CKA, cross-temporal CKA(base→ckpt)</i>"]
     end
 
     MODEL["<b>Pythia-1.4B (base)</b><br/>24 layers · d_model=2048"] -- "tokenize stimuli → forward pass →<br/>gather '=' terminal token h_l" --> EXT["<b>Base hidden states</b><br/>layer_00..23.pt · FP16 [n,2048]<br/>+ metadata.json"]
@@ -62,12 +62,12 @@ flowchart LR
     R4DET -- "mask to single-token results<br/>(1500/2000; 500 negatives = sign token ' -')" --> R4SINGLE
     MODEL -- "bf16-ref vs double-quant NF4, per layer:<br/>rel Frobenius ‖Δ‖_F/‖ref‖_F + mean cosine" --> NF4["NF4 degradation baseline (T16)<br/>nf4_degradation/summary.json<br/><i>mean rel Frob 0.153 · cos 0.98–0.999 · SNR 4.51×</i>"]
     FT -- "0-shot generate → exact-match acc<br/>+ bootstrap CI (per checkpoint)" --> GSM["GSM8K 0-shot accuracy<br/>gsm8k/gsm8k_*.json<br/><i>0.000 → 0.099 → 0.136 → 0.152 → 0.161 → 0.171<br/>(step 0 → 12343 · reaches 17.1% from 0 baseline, monotonic)</i>"]
-    R3ACC --> TRAJ["<b>Unified trajectory CSV</b><br/>dynamic/trajectories_probing.csv<br/>(+ gsm8k_acc, gsm8k_ci_*)"]
+    R3ACC --> TRAJ["<b>Unified trajectory CSV</b><br/>rq4_drift/trajectories_probing.csv<br/>(+ gsm8k_acc, gsm8k_ci_*)"]
     R3DRIFT --> TRAJ
     GSM -- "merge gsm8k_acc + CI per step" --> TRAJ
     EXT -- "H_base reference (cross-temporal CKA)" --> SUPPCSV
     CKEXT -- "reuse isotropy_exact + linear_cka /<br/>compute_cka_intercategory (no refit)" --> SUPPCSV
-    SUPPCSV --> SUPPV["Supplementary dashboard<br/>results/figures/supplementary_ft_dynamics.html"]
+    SUPPCSV --> SUPPV["RQ3 dashboard<br/>results/figures/rq3/rq3_ft_dynamics.html"]
     GSM -- "descriptive overlay only (n=6)" --> SUPPV
     ISO --> VIZ1["RQ1 emergence dashboard<br/>results/figures/"]
     CKA --> VIZ1
@@ -76,9 +76,9 @@ flowchart LR
     SCONF -- "effect size vs significance bars (E-M-03)" --> VIZ2
     PCONF -- "effect size vs significance bars (E-M-03)" --> VIZ2
     CKA -- "math-vs-ctrl 2-class PCA @ L23<br/>(separation tracks terminal-'=' axis, not math)" --> VIZ2
-    TRAJ --> VIZ3["RQ3 trajectory dashboard<br/>results/figures/"]
+    TRAJ --> VIZ3["RQ4 trajectory dashboard<br/>results/figures/rq4/"]
     NF4 -- " degradation disclosure " --> VIZ3
-    R4DET --> VIZ4["RQ4 determinization dashboard<br/>results/figures/rq4/rq4_determinization.html"]
+    R4DET --> VIZ4["RQ5 determinization dashboard<br/>results/figures/rq5/rq5_determinization.html"]
     R4SINGLE --> VIZ4
     GSM -- "descriptive overlay only (n=6)" --> VIZ4
 
@@ -119,6 +119,6 @@ flowchart LR
     
     style RQ1 fill:#FFBD59,stroke:#fdba74,color:#000000
     style RQ2 fill:#FFBD59,stroke:#fdba74,color:#000000
-    style RQ3 fill:#FFBD59,stroke:#fdba74,color:#000000
     style RQ4 fill:#FFBD59,stroke:#fdba74,color:#000000
-    style SUPP fill:#FFBD59,stroke:#fdba74,color:#000000
+    style RQ5 fill:#FFBD59,stroke:#fdba74,color:#000000
+    style RQ3 fill:#FFBD59,stroke:#fdba74,color:#000000

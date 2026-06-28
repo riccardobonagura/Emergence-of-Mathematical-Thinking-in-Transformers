@@ -179,14 +179,14 @@ For each checkpoint:
 2. PeftModel.from_pretrained() → merge_and_unload()
 3. HookedTransformer.from_pretrained(hf_model=merged, fold_ln=True, fp16) — same config as base extraction
 4. extract_from_model() — reuses the main extraction pipeline
-5. subprocess.run(["python", "run_rq3.py", ...]) — triggers dynamic evaluation
+5. subprocess.run(["python", "run_rq4.py", ...]) — triggers dynamic evaluation
 6. GPU cleanup between checkpoints
 
 ---
-9. RQ3 Pipeline — run_rq3.py
+9. RQ4 Pipeline — run_rq4.py
 
 Input: checkpoint extracted tensors + base tensors + frozen RQ2 weights/test_indices + config
-Output: results/rq2_probing/dynamic/trajectories_probing.csv
+Output: results/rq4_drift/trajectories_probing.csv
 
 1. Parse checkpoint step from directory name
 2. Validate seed consistency via rq2_config_hash.json
@@ -197,7 +197,7 @@ Output: results/rq2_probing/dynamic/trajectories_probing.csv
   - For each property: load frozen weights → apply to H_ckpt[test_idx] → accuracy
 5. Append-or-replace results in CSV (idempotent per step)
 
-TypedDict: RQ3TrajectoryRow — step, layer, property, probing_acc, geom_delta_math, geom_delta_ctrl, geom_delta_math_rel, geom_delta_ctrl_rel
+TypedDict: RQ4TrajectoryRow — step, layer, property, probing_acc, geom_delta_math, geom_delta_ctrl, geom_delta_math_rel, geom_delta_ctrl_rel
 
 Dual Frobenius metrics:
 - geom_delta_math: ||H_ckpt − H_base||_F / (N × d) — dim-normalized
@@ -292,7 +292,9 @@ results/
 └── figures/
     ├── rq1_emergence/rq1_emergence.html
     ├── rq2/accuracy_curves.png, .html, orthogonality_*.png, .html
-    └── rq3/rq3_dashboard.html
+    ├── rq3/rq3_ft_dynamics.html
+    ├── rq4/rq4_dashboard.html
+    └── rq5/rq5_determinization.html
 
 ---
 13. Visualization — src/viz/
@@ -305,7 +307,7 @@ Module: plot_rq1_emergence.py
 Reads: isotropy CSV + CKA .npy
 Produces: 2-panel Plotly dashboard (ΔIso + evolutionary CKA)
 ────────────────────────────────────────
-Module: plot_rq3_trajectory.py
+Module: plot_rq4_trajectory.py
 Reads: trajectories_probing.csv
 Produces: 3-panel Plotly dashboard (accuracy trajectory, drift heatmap,
   drift↔Δacc scatter)
@@ -373,9 +375,9 @@ train_qlora.py ──► data/processed/checkpoints/
 checkpoint_loop.py
     │  reads: checkpoints/ + base model + stimuli
     │  writes: checkpoints_extracted/{ckpt}/layer_XX.pt + metadata.json
-    │  triggers: run_rq3.py via subprocess
+    │  triggers: run_rq4.py via subprocess
     │
-run_rq3.py
+run_rq4.py
     │  reads: base tensors + checkpoint tensors + frozen weights + test_indices + config_hash
     │  writes: trajectories_probing.csv (append-or-replace per step)
     │
@@ -402,7 +404,7 @@ nf4_degradation.py
 │ UTF-8 encoding  │ Every open() call has encoding="utf-8".              │
 ├─────────────────┼──────────────────────────────────────────────────────┤
 │ TypedDicts      │ ExtractionMetadata, LayerResult, RQ2Result,          │
-│ (ARCH-03)       │ RQ3TrajectoryRow, PropConfig, ModelProfile           │
+│ (ARCH-03)       │ RQ4TrajectoryRow, PropConfig, ModelProfile           │
 ├─────────────────┼──────────────────────────────────────────────────────┤
 │ Category SSOT   │ categories.py: MATH_CATS, CTRL_CATS, ALL_CATS,       │
 │                 │ LABEL_SENTINEL=-1                                    │
@@ -461,7 +463,7 @@ python -m src.eval.eval_gsm8k --model_path data/processed/checkpoints/checkpoint
 
 # 11. Visualization
 python -m src.viz.plot_rq1_emergence
-python -m src.viz.plot_rq3_trajectory
+python -m src.viz.plot_rq4_trajectory
 
 ---
 18. Known Limitations (Documented)

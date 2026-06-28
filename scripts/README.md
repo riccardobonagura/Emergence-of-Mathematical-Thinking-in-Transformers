@@ -25,21 +25,21 @@ python scripts/oracolo.py --yes                 # accept confirmations (CI); D6 
 ## Categories (menu order)
 
 `SETUP 🛠 · DATASET 𝝳 · EXTRACTION 🜍 · RQ1 △ · RQ2 ⊕ · FINETUNING 🜚 ·
-RQ3 ⇌ · RQ4 ⚖ · EVAL 𝛴 · VIZ ◐ · TESTS ✓ · UTILS ·`
+RQ3 ⟳ · RQ4 ⇌ · RQ5 ⚖ · EVAL 𝛴 · VIZ ◐ · TESTS ✓ · UTILS ·`
 
 ## Composite rites (`--sequence` or menu `R`)
 
 `cammino_completo` (full cold-start, GPU) · `solo_probing` · `solo_geometria` ·
-`solo_rq4` · `solo_viz` · `smoke_test` (pytest) · `dataset_regen`.
+`solo_rq5` · `solo_viz` · `smoke_test` (pytest) · `dataset_regen`.
 
 ## Encoded drifts (RECON §5, handled in code)
 
 - **D2** — RQ2 prints "config ships C=1.0; spec asserts 10.0".
 - **D3** — `train` reads `lora_config.yaml` and flags `max_seq_length` ≠ 1024.
-- **D6** — `rq3/rq4/rq1-dyn/gsm8k` refuse if `total_training_steps` is absent
+- **D6** — `rq4/rq5/rq3/gsm8k` refuse if `total_training_steps` is absent
   (silent default 2000 ≠ canonical 12343). **Not overridable by `--yes`.**
 - **D8** — `gsm8k --tag final` resolves `final_checkpoint/` vs `final_adapter/`.
-- **D11** — `gsm8k ckpt_N` chains `rq3` first if the trajectory CSV lacks that step.
+- **D11** — `gsm8k ckpt_N` chains `rq4` first if the trajectory CSV lacks that step.
 
 Note: `build_control` is a library, not an entry (D1) — it is not registered.
 
