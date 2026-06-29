@@ -10,7 +10,7 @@ A reproducible research pipeline that probes how arithmetic structure is represe
 ---
 ## Project Map
 <p align="center">
-  <img src="docs/images/rq1-4.png" width="400"/>
+  <img src="docs/images/Pipeline-Detailed.png" width="400"/>
 </p>
 
 ## Table of contents
