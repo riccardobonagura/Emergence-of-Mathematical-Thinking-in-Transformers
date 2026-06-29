@@ -44,6 +44,8 @@ class ProbingResult:
     bias: float
 ```
 
+> Nel progetto i contratti reali sono **TypedDict** (non dataclass): `ExtractionMetadata`, `LayerResult`, `PropConfig`, `RQ4TrajectoryRow`, `RQ5DeterminizationRow`, definiti in `schemas.py` / `engine.py` / `extract_states.py`. Gli esempi sopra restano illustrativi del principio.
+
 
 ## Scala di principi — Design Hierarchy v1
 
@@ -148,7 +150,7 @@ CONFLITTO TIPO 1 — O-03 (YAGNI) vs S-01 (Deep modules)
 
 CONFLITTO TIPO 2 — S-02 (Vertical cohesion) vs C-01 (Explicit contracts)
   Scenario: "il contratto TypedDict serve a 3 moduli verticali diversi"
-  Risoluzione: il TypedDict va in config.py (source of truth) e importato.
+  Risoluzione: il TypedDict va in schemas.py (single source of truth) e importato.
   Non duplicato. S-03 (SSOT) media il conflitto.
 
 CONFLITTO TIPO 3 — A-04 (Boring code) vs B-02 (Rule of Three)
@@ -163,7 +165,7 @@ CONFLITTO TIPO 4 — O-01 (Reduce complexity) vs A-01 (Self-contained units)
   da un altro modulo"
   Risoluzione: non copiare — importare. Self-contained significa
   "comprensibile senza leggere altri file", non "zero imports".
-  I-03 (SSOT) proibisce la copia. Nessun conflitto reale.
+  S-03 (SSOT) proibisce la copia. Nessun conflitto reale.
 ```
 
 ---

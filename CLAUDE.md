@@ -30,6 +30,8 @@ python run_rq5.py --config configs/config_rq2.yaml                            # 
 python -m src.viz.plot_rq4_trajectory                                        # RQ4 dashboard (CPU)
 python run_rq3.py --config configs/config_rq2.yaml                            # CPU: RQ3 FT geometry dynamics
 python -m src.viz.plot_rq3_ft_dynamics                                       # RQ3 dashboard (CPU)
+python -m src.viz.plot_rq5_determinization                                   # RQ5 dashboard (CPU)
+python scripts/oracolo.py                                                     # interactive menu orchestrator (28 entry points)
 ```
 
 ## Authority order (conflicts resolved top→bottom)
@@ -55,17 +57,18 @@ python -m src.viz.plot_rq3_ft_dynamics                                       # R
 
 ## Architecture
 src/
-config/     categories.py (SSOT categories), models.py (ModelProfile registry)
+config/     categories.py (SSOT categories), models.py (ModelProfile registry), schemas.py (PropConfig)
 dataset/    build_stimuli.py, build_control.py, merge_stimuli.py, regenerate_dataset.py
 extraction/ extract_states.py, checkpoint_loop.py
 metrics/    cka.py, isotropy.py
 probing/    seeds.py, pipeline.py, directions.py, stats.py, probing_dataset.py,
 engine.py, io_utils.py, run_confound_checks.py, run_parity_confound_checks.py
 finetuning/ train_qlora.py
-eval/       eval_gsm8k.py, nf4_degradation.py
-viz/        plot_rq1_emergence.py, plot_rq4_trajectory.py, plot_rq3_ft_dynamics.py,
+eval/       eval_gsm8k.py, nf4_degradation.py, determinization.py, rq4_drift_specificity.py
+viz/        plot_rq1_emergence.py, plot_rq2_probing.py, plot_rq4_trajectory.py, plot_rq3_ft_dynamics.py, plot_rq5_determinization.py,
 pca_umap_viz.py, probing_viz.py
 utils/      validate_configs.py, io_smoke_test.py
+scripts/    oracolo.py (28-entry menu orchestrator)
 run_rq1.py, run_rq2.py, run_rq3.py, run_rq4.py, run_rq5.py   # checkpoint loop is src/extraction/checkpoint_loop.py (no root copy)
 tests/test_pipeline_e2e.py
 
@@ -80,7 +83,8 @@ tests/test_pipeline_e2e.py
 8. NF4 degradation baseline (T16) → bf16-ref vs NF4 per-layer Frobenius/cosine → `results/nf4_degradation/`
 9. GSM8K 0-shot eval → per checkpoint (baseline + 4 ckpts + final_adapter) → `results/gsm8k/gsm8k_<tag>.json`,
    merged into the step 7 trajectory CSV (`gsm8k_acc`, `gsm8k_ci_*`)
-10. Visualization → `src/viz/` dashboards (RQ1 emergence, RQ4 trajectory) → `results/figures/`
+10. RQ5 → determinization at the "=" token (next-token entropy, P(answer), top1−top2 logit margin) per checkpoint → `results/rq5_determinization/`
+11. Visualization → `src/viz/` dashboards (RQ1 emergence, RQ2 probing, RQ3 FT-dynamics, RQ4 trajectory, RQ5 determinization) → `results/figures/`
 
 RQ3 — FT geometry dynamics (dynamics of the RQ1 geometry across fine-tuning):
 - `run_rq3.py` recomputes RQ1 geometry (ΔIso, inter-category CKA) + cross-temporal
@@ -106,8 +110,10 @@ data/processed/
 - `rq2_config_hash.json`: saved by `run_rq2.py` after weights, verified by `run_rq4.py`
 
 ## Testing
-`tests/test_pipeline_e2e.py` — full RQ1→RQ2→RQ3 on synthetic CPU data, no GPU needed.
+`tests/test_pipeline_e2e.py` — full RQ1→RQ2→RQ4 (drift) on synthetic CPU data, no GPU needed.
 Monkeypatches `load_hidden_states` with random tensors. All fixtures generated inline.
+The wider CPU suite also covers CKA robustness, isotropy floor, NF4 SNR, RQ4 drift specificity,
+viz smoke, and the 28-entry oracolo registry (`tests/test_oracolo_smoke.py`).
 
 
 ## Research scope — what results mean
@@ -117,6 +123,7 @@ Monkeypatches `load_hidden_states` with random tensors. All fixtures generated i
   3 syntactic templates, operators as specified per category
 - Extraction at "=" token = representation of expected result, 
   not computed result (ontologically relevant distinction)
-- QLoRA targets QKV only — MLP frozen — RQ3 claims are 
-  scoped to attention projections, not full architecture
+- QLoRA targets QKV only — MLP frozen — the fine-tuning claims
+  (RQ3 dynamics, RQ4 drift, RQ5 determinization) are scoped to
+  attention projections, not full architecture
 - 0-shot GSM8K throughout — not comparable to 5-shot literature baselines
