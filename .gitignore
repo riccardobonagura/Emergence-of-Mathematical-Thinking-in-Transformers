@@ -25,7 +25,6 @@ __pycache__/
 .mypy_cache/
 
 # --- DATI DELLA TESI ---
-# Escludiamo le cartelle che conterranno file pesanti
 data/
 results/
 checkpoints/
