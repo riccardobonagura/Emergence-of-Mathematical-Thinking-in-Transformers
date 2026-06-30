@@ -7,6 +7,12 @@
 > (apparato di peer-review). Dove le due fonti divergevano tra loro o contraddicevano la ground truth del
 > progetto (spec `config_rq2.yaml`, Ground-Truth Map, architettura GPT-NeoX), il conflitto è stato risolto e
 > annotato. Le correzioni e le verifiche di citazione sono tracciate nel **§10 — Registro di riconciliazione**.
+>
+> **Uso.** Documento di *reference interno* per il workflow human/AI (leggibile su Git, non un deliverable
+> formale). Prescrittivo e orientato ai principi, senza risultati numerici. Le citazioni sono limitate a quelle
+> effettivamente usate nella codebase e nella tesi (`.tex` e `bibliography.bib` sono allineati). La numerazione
+> delle Research Question segue lo schema definitivo a cinque RQ (RQ1 geometria, RQ2 probing, RQ3 dinamica della
+> geometria nel fine-tuning, RQ4 drift di Frobenius, RQ5 determinizzazione).
 
 ---
 
@@ -79,24 +85,28 @@ struttura osservata sia causalmente responsabile delle capacità aritmetiche.
 accessibile nel sottospazio lineare delle attivazioni (Belinkov 2022). Segno e parità sono distinti: il segno
 dipende dalla struttura degli operandi di input; la parità richiede combinazione aritmetica dei due operandi.
 
-**Lettura interpretativa corretta (assorbe la confound posture).** Il pattern naïf "il segno emerge prima della
-parità" va **invertito in interpretazione**: la proprietà che emerge presto (segno) è quella la cui
-decodificabilità è *meno* affidabile come evidenza di computazione, perché ai layer iniziali è presente
-soprattutto struttura a livello di operando, non un confronto computato. La parità che emerge tardi (~layer 13)
-è *più* compatibile con una combinazione genuina di entrambi gli operandi. **Attenzione:** la parità *precoce*
-NON va auto-segnalata come leak come si fa per il segno — `parità(risultato)` è essenzialmente la componente di
-Fourier a periodo 2 di un numero, e i numeri sono rappresentati su un manifold di Fourier/elicoidale fin dal
-layer 0 (Kantamneni & Tegmark 2025). La domanda corretta per la parità precoce è se la direzione di parità si
-allinea con la feature T=2, non se è un artefatto.
+**Lettura interpretativa corretta (assorbe la confound posture).** L'asimmetria si deriva dall'algebra prima di
+addestrare la sonda. Il **segno** è un funzionale lineare degli operandi: se $a$ e $b$ sono presenti come
+direzioni in $h$ (plausibile, essendo token recenti instradati sul "="), allora $a-b$ è una loro combinazione
+lineare e il segno è una soglia su di essa ($w=[+1,-1]$, $c=0$ basta). Quindi una sonda che trova il segno presto
+non prova che il modello computi alcunché: è il reader a ricostruire l'ingrediente (trappola di Belinkov, reale
+per il segno). La **parità** non è un funzionale lineare degli operandi: modulo 2, $(a-b)\bmod 2 = (a\bmod 2)
+\oplus (b\bmod 2)$, e nessun classificatore affine calcola lo XOR (Minsky & Papert 1969; le classi pari/dispari
+si intrecciano a scacchiera, nessun iperpiano le separa). Ne segue la predizione: la parità è **non
+decodificabile finché il modello non la computa** e la riscrive come direzione lineare. Quando emerge (salto
+L12→L13), è l'unico punto in cui affermare "il modello computa qui" è difendibile, perché solo una computazione
+non lineare spiega quel salto, con confound trascurabile. La parità *precoce* eventuale non è un leak da
+allineare a una feature di Fourier: è rumore sotto il soffitto del sottospazio degli operandi.
 
 **Validazione statistica.** Per ogni layer: bootstrap CI 95% (**N = 1000**), permutation test (**N = 1000**,
 shuffle delle label sul *solo* train via CV interna, niente leakage sul test), p-value riportato. Correzione
 **Benjamini-Hochberg** su **48 test** (24 layer × 2 proprietà). Regolarizzazione probe: **LogisticRegression
-lbfgs, C = 10.0** (selezionata da C-sweep), `max_iter=1000`. Split pair-aware: i membri di una coppia
+lbfgs, C = 1.0** (fissata dopo un C-sweep su $\{0.01, 0.1, 1.0, 10.0\}$ che ha mostrato accuracy effettivamente
+invariante nel range), `max_iter=1000`. Split pair-aware: i membri di una coppia
 contrastiva (a−b / b−a) restano nella stessa partizione → nessun leakage minimal-pair; test indices congelati
 *prima* di ogni training.
 
-**Selectivity — chiarimento critico.** La **selectivity di Hewitt-Liang** (= accuracy(task) − accuracy(control
+**Selectivity — chiarimento critico.** La **selectivity** (= accuracy(task) − accuracy(control
 task), dove il control task usa *gli stessi input con label casuali e una probe riaddestrata*) **non è
 calcolata** in questo progetto. Ciò che viene riportato è `ctrl_positive_pred_rate` (frazione di input di
 controllo predetti positivi: ≈0.5 = la direzione non si attiva spuriamente su prosa non-aritmetica) — una
@@ -107,26 +117,47 @@ selectivity.
 **Extraction point.** Le rappresentazioni sono estratte al token "=" (terminale), *prima* che il modello generi
 il risultato. La probe misura quindi la rappresentazione dell'*aspettativa* del risultato, non del risultato
 computato — limite interpretativo dichiarato (E-P-02). La giustificazione corretta dell'estrazione al "=" è la
-convergenza dell'informazione query-rilevante sul token finale (Nikankin et al. 2024) e il flusso
-operando→risultato (Stolfo et al. 2023), **non** ROME (che riguarda factual recall, §9).
+convergenza dell'informazione query-rilevante sul token finale e il flusso operando→risultato lungo
+l'attenzione, **non** un meccanismo di factual recall (vedi §9).
 
 **Scope.** Valido per dominio [10,50], sottrazione (CAT-SIGN) e addizione/sottrazione (CAT-PARITY), 3 template
 sintatticamente simili. Generalizzazione fuori range / template / operatori richiede verifica esplicita.
 
-### RQ3 — Dinamica geometrica del fine-tuning
+### RQ3 — Dinamica della geometria RQ1 nel fine-tuning
+
+> *Il fine-tuning QLoRA crea la divergenza geometrica math-vs-linguaggio che il modello base non aveva? In altri
+> termini: la struttura relazionale misurata da RQ1 (CKA inter-categoria, ΔIso) cambia lungo i checkpoint, e il
+> movimento misurato da RQ4 è ristrutturazione genuina o solo rotazione e riscalatura?*
+
+**Razionale.** RQ3 ricalcola le metriche descrittive di RQ1 su ogni checkpoint QLoRA, lette al "=", e aggiunge
+una CKA cross-temporale `1 - CKA(H_base, H_ckpt)` per layer. È il complemento *invariante* della Frobenius di
+RQ4: la CKA lineare è invariante a rotazione, riflessione e scaling isotropo, quindi dove $1-\text{CKA}$ è
+piccolo ma la Frobenius è grande, il movimento è quasi-rigido (rotazione/scala), non ristrutturazione.
+
+**Strumento e ipotesi.** Primario: CKA lineare (Kornblith et al. 2019). Due ipotesi opposte: *domain emergence*
+(la CKA inter-categoria scende sotto il null e appare una divergenza) vs *quasi-rigid movement* (il drift
+strutturale resta piccolo rispetto alla Frobenius di RQ4 e non appare nuova divergenza).
+
+**Scope.** `run_rq3.py` riusa la geometria di RQ1 (nessuna modifica a `run_rq1`/`run_rq4`/`cka`/`isotropy`).
+L'overlay GSM8K è descrittivo (n=6), non una correlazione; la CKA evolutiva layer-a-layer è fuori scope. Output:
+`results/rq3_ft_dynamics/`.
+
+### RQ4 — Riorganizzazione geometrica indotta da QLoRA (Frobenius drift)
 
 > *Il fine-tuning QLoRA su MetaMath produce nelle rappresentazioni residue un drift geometrico superiore alla
-> degradazione baseline NF4? In quali layer le proiezioni di attenzione si riorganizzano di più, e questo drift
-> correla con il miglioramento su GSM8K?*
+> degradazione baseline NF4? In quali layer le proiezioni di attenzione si riorganizzano di più, e come si
+> rapporta il movimento alle direzioni delle sonde RQ2 e alla performance GSM8K?*
 
 **Razionale.** Se l'apprendimento matematico produce riorganizzazione sistematica, il drift dovrebbe essere
 non-uniforme tra layer e correlato col miglioramento funzionale (GSM8K). La baseline NF4 separa il segnale di
-apprendimento dal rumore di quantizzazione.
+apprendimento dal rumore di quantizzazione. Si osservano le direzioni delle sonde RQ2 (frozen, senza refit) lungo
+la traiettoria: *consolidamento* (sonde stabili, drift modesto) vs *riorganizzazione* (sonde che decadono, drift
+grande).
 
 **Scope e confound strutturale.** QLoRA è applicato *solo* alle proiezioni `query_key_value`; le MLP sono
 congelate. Poiché il residuo è parallelo, congelare la MLP mentre si adatta l'attention è una **separazione
 pulita di due percorsi di scrittura indipendenti**, non un taglio parziale di un blocco sequenziale. ROME/MEMIT
-localizzano lo *storage fattuale* prevalentemente nelle MLP intermedie: le inferenze di RQ3 sono quindi valide
+localizzano lo *storage fattuale* prevalentemente nelle MLP intermedie: le inferenze di RQ4 sono quindi valide
 per la riorganizzazione del pathway di attenzione/trasporto, non per la computazione aritmetica né per lo
 storage fattuale. **Soffitto atteso:** QLoRA richiede adapter su *tutti* i layer lineari per eguagliare il full
 fine-tuning (Dettmers et al. 2023); il setup QKV-only è atteso *capping* dei guadagni GSM8K — la correlazione
@@ -136,7 +167,7 @@ sulle MLP per separare trasporto da computazione).
 **Metriche drift (due formulazioni).** (1) Normalizzata per dimensione: `‖H_ckpt − H_base‖_F / (N·d)`.
 (2) Relativa: `‖H_ckpt − H_base‖_F / ‖H_base‖_F` (scala-invariante). Entrambe calcolate separatamente su math e
 ctrl. La **relativa** è la metrica di confronto con T16: è scala-invariante, quindi valida nonostante T16 usi
-hook HF nativi (senza fold_ln) mentre RQ3 usa TransformerLens (`fold_ln=True`). TransformerLens non può wrappare
+hook HF nativi (senza fold_ln) mentre RQ4 usa TransformerLens (`fold_ln=True`). TransformerLens non può wrappare
 modelli NF4 (il fold richiede accesso diretto ai pesi, incompatibile coi tensori quantizzati BitsAndBytes). Le
 metriche misurano solo la distanza totale, non la decompongono in rotazione/scala/traslazione.
 
@@ -149,6 +180,28 @@ non soglie di distanza-Frobenius di rappresentazione). Vanno citate come tali. U
 standard a 5-shot: la differenza sistematica stimata è 5–15% inferiore in 0-shot. Per un base model da 1.4B il
 risultato 0-shot atteso è prossimo a ~0% (baseline 0.0 corretto e atteso). Tutti i confronti sono interni alla
 stessa configurazione.
+
+### RQ5 — Determinizzazione comportamentale al token "="
+
+> *Letta al "=", come cambia la distribuzione del modello sul token successivo lungo il fine-tuning, e il
+> fine-tuning costruisce capacità matematica genuina o solo confidenza nel formato addestrato?*
+
+**Razionale.** A differenza degli RQ interni, RQ5 legge la distribuzione di output al "=" (puramente inferenziale,
+nessun update di pesi, nessuna generazione autoregressiva). Tre metriche complementari: entropia di Shannon
+(quanto è indecisa la distribuzione), margine top1−top2 dei logit (decisività, scala-dipendente), e
+$P(\text{corretto})$ (massa softmax sul token target). Le prime due misurano **precisione**, la terza
+**accuratezza**: un modello può diventare più preciso senza diventare più accurato (cristallizzare senza
+generalizzare).
+
+**Identità single-token.** Su stimoli a risposta single-token $P(\text{primo token}) = P(\text{risposta
+completa})$, quindi $P(\text{corretto})$ è esatto. CAT-PARITY è sempre single-token; i 500 negativi di CAT-SIGN
+tokenizzano in due token (segno " -" + cifra), rompendo l'identità: vanno esclusi dalle metriche `_single`. È una
+predizione falsificabile derivata dal solo tokenizer.
+
+**Discriminatore.** L'overlay GSM8K (matematica in linguaggio naturale, fuori dal formato addestrato) separa le
+due ipotesi: se il fine-tuning costruisse aritmetica trasferibile, in-format e out-of-format salirebbero insieme;
+se cristallizza il formato, divergono. Belinkov vale qui con forza ancora maggiore che in RQ2: queste metriche
+leggono solo la distribuzione di output, non uno stato interno. Output: `run_rq5.py` → `results/rq5_determinization/`.
 
 ---
 
@@ -192,19 +245,36 @@ Estrazione hidden states — Pythia-1.4B (TransformerLens, fold_ln=True, fp16)
     │  Terminale via _last_token_indices (scan da destra), NON [:, -1, :]
     │  layer_XX.pt = blocks.X.hook_resid_post  (output del blocco, non embedding)
     │
-    ├──▶ RQ1: ΔIso + CKA inter/evolutionary + apparato robustezza (debiased/Procrustes/influence/baseline)
+    ├──▶ RQ1 (run_rq1.py): ΔIso + CKA inter/evolutionary + apparato robustezza
+    │         (debiased/Procrustes/influence/baseline) → results/rq1_emergence/
     │
-    ├──▶ RQ2: Linear probing (sign, parity)
-    │         LogisticRegression lbfgs, C=10.0, max_iter=1000
+    ├──▶ RQ2 (run_rq2.py): Linear probing (sign, parity)
+    │         LogisticRegression lbfgs, C=1.0, max_iter=1000
     │         Split 80/20 pair-aware, seed deterministico (get_seed)
     │         Validazione: bootstrap CI (1000), permutation test (1000, train-only CV), BH su 48
     │         Confound N-01 (sign): cosine(w_sign, w_op1) + LinReg R²(op1) + Pearson(logit, op1)
     │         Confound N-02 (parity): op2 value/parity decodability + Pearson(logit, op2 parity)
+    │         → results/rq2_probing/ (+ rq2_config_hash.json)
     │
-    └──▶ RQ3: QLoRA su MetaMathQA (NF4, r=16, α=32, QKV-only, MLP congelate)
-              ~25 checkpoint (save ogni 500 step, ~12k step) → merge → estrazione → frozen probe accuracy
-              Frobenius drift per layer (math vs ctrl separati, normalizzata + relativa)
-              GSM8K 0-shot a ogni checkpoint; baseline NF4 = T16 (nf4_degradation.py)
+    └──▶ Fine-tuning (train_qlora.py): QLoRA su MetaMathQA (NF4, r=16, α=32, QKV-only, MLP congelate)
+              save ogni 500 step (~12343 step totali); le analisi leggono
+              step 0 (base) + checkpoint 2500/5000/7500/10000 + final_adapter (12343)
+              │
+              checkpoint_loop.py: per ckpt → merge → re-estrazione → triggera run_rq4.py
+              │  → data/processed/checkpoints_extracted/checkpoint-<step>/
+              │
+              ├──▶ RQ3 (run_rq3.py, CPU): ricalcolo geometria RQ1 (ΔIso, CKA inter-categoria)
+              │         + CKA cross-temporale 1−CKA(base→ckpt); reuse-only → results/rq3_ft_dynamics/
+              │
+              ├──▶ RQ4 (run_rq4.py): frozen probe RQ2 (no refit) + Frobenius drift per layer
+              │         (math vs ctrl, normalizzata + relativa); baseline NF4 = T16
+              │         (nf4_degradation.py); GSM8K 0-shot per ckpt (eval_gsm8k.py)
+              │         → results/rq4_drift/trajectories_probing.csv
+              │
+              └──▶ RQ5 (run_rq5.py): determinizzazione al "=" (entropia next-token,
+                        P(risposta), margine top1−top2) per ckpt → results/rq5_determinization/
+
+Orchestrazione: scripts/oracolo.py (menu interattivo, 28 entry point, blocca l'esecuzione fuori ordine)
 ```
 
 ---
@@ -236,87 +306,69 @@ Entrambi i moduli includono l'assertion index-space: ordine `metadata.stimuli_id
 | ID | Principio | Fonte | Regola | Segnale di violazione |
 |---|---|---|---|---|
 | **E-O-01** | Distinguere correlazione da causazione | Belinkov (2022) §4 | Ogni "il modello *usa* X" → "X è *linearmente decodificabile* da Y" | "il modello calcola il segno al layer 3" invece di "il segno è decodificabile al layer 3" |
-| **E-O-02** | Construct validity | Cronbach & Meehl (1955); adattato da Hewitt & Liang (2019) | Una sonda che predice X prova che X è nell'hidden state — non che X *guidi* il comportamento | Accuracy alta ≠ informazione computazionalmente rilevante |
-| **E-O-03** | Controllo dei confound | Campbell & Stanley (1963) | Ogni differenza tra condizioni deve avere un'alternativa confound esplicita e quantificata | N-01/N-02 documentati ma *non* discussi in termini di impatto quantitativo |
-| **E-O-04** | Standard di replicazione | Gundersen & Kjensmo (2018) | Seed fissi, dataset versionato, codice pubblico — necessario non sufficiente | Risultati che variano >2% su seed diversi |
+| **E-O-02** | Construct validity | Psicometria classica; probing methodology | Una sonda che predice X prova che X è nell'hidden state — non che X *guidi* il comportamento | Accuracy alta ≠ informazione computazionalmente rilevante |
+| **E-O-03** | Controllo dei confound | Metodologia sperimentale standard | Ogni differenza tra condizioni deve avere un'alternativa confound esplicita e quantificata | N-01/N-02 documentati ma *non* discussi in termini di impatto quantitativo |
+| **E-O-04** | Standard di replicazione | Reproducibility standard (ML) | Seed fissi, dataset versionato, codice pubblico — necessario non sufficiente | Risultati che variano >2% su seed diversi |
 
 ### Livello 2 — ML Research Standards
 
 | ID | Principio | Fonte | Regola | Segnale di violazione |
 |---|---|---|---|---|
-| **E-M-01** | Baseline comparison | Standard ML | Ogni metrica confrontata con: (a) chance 0.5, (b) majority class, (c) null da permutazione, (d) probe di controllo sull'operando. *(NB: Quirke & Barez NON è un baseline valido — vedi §9.)* | Accuracy su sign senza confronto con majority/permutation null/operand control |
-| **E-M-02** | Significatività statistica | Cohen (1988); permutation testing | Riportare CI e p-value; per probing il permutation test con label shuffle è il gold standard | Accuracy senza CI o senza p-value |
-| **E-M-03** | Effect size > significatività | Cohen (1988); Wasserstein et al. (2019) | Riportare magnitudine, non solo significatività (0.52 con p<0.05 è irrilevante) | Peak accuracy senza differenza dal baseline random |
-| **E-M-04** | Probe selectivity | Hewitt & Liang (2019) §3 | Selectivity vera = same-input + *label casuali* + probe riaddestrata. **NON calcolata qui**: `ctrl_positive_pred_rate` è sanity, non selectivity; l'evidenza vera è N-01/N-02 | Claim che si appoggia su `ctrl_positive_pred_rate` come selectivity |
+| **E-M-01** | Baseline comparison | Standard ML | Ogni metrica confrontata con: (a) chance 0.5, (b) majority class, (c) null da permutazione, (d) probe di controllo sull'operando | Accuracy su sign senza confronto con majority/permutation null/operand control |
+| **E-M-02** | Significatività statistica | Standard ML; permutation testing | Riportare CI e p-value; per probing il permutation test con label shuffle è il gold standard | Accuracy senza CI o senza p-value |
+| **E-M-03** | Effect size > significatività | Standard ML | Riportare magnitudine, non solo significatività (0.52 con p<0.05 è irrilevante) | Peak accuracy senza differenza dal baseline random |
+| **E-M-04** | Probe selectivity | Probing methodology | Selectivity vera = same-input + *label casuali* + probe riaddestrata. **NON calcolata qui**: `ctrl_positive_pred_rate` è sanity, non selectivity; l'evidenza vera è N-01/N-02 | Claim che si appoggia su `ctrl_positive_pred_rate` come selectivity |
 | **E-M-05** | Multiple comparison correction | Benjamini & Hochberg (1995) | 48 test (24 layer × 2 prop) → correzione FDR | BH non applicata |
 
 ### Livello 3 — Probing Methodology Specific
 
 | ID | Principio | Fonte | Regola | Segnale di violazione |
 |---|---|---|---|---|
-| **E-P-01** | Complessità della probe come variabile | Hewitt & Liang (2019); Pimentel et al. (2020) | La scelta lineare (logistic reg.) è una decisione forte; una MLP probe molto migliore indicherebbe non-linearità | MLP probe >> linear probe |
-| **E-P-02** | Giustificazione dell'extraction point | Nikankin et al. (2024); Stolfo et al. (2023) | L'estrazione al "=" si giustifica con la convergenza sul token finale (Nikankin) e il flusso operando→risultato (Stolfo). ROME solo per contrasto (factual recall, mapping non diretto) | Estrazione al "=" giustificata *positivamente* via ROME |
+| **E-P-01** | Complessità della probe come variabile | Probing methodology | La scelta lineare (logistic reg.) è una decisione forte; una MLP probe molto migliore indicherebbe non-linearità | MLP probe >> linear probe |
+| **E-P-02** | Giustificazione dell'extraction point | Interpretability literature (arithmetic) | L'estrazione al "=" si giustifica con la convergenza sul token finale e il flusso operando→risultato lungo l'attenzione, non con un meccanismo di factual recall (categoria diversa, §9) | Estrazione al "=" giustificata via factual-recall |
 | **E-P-03** | Contaminazione train/test | Standard ML | I pesi della probe non devono vedere il test; test indices salvati prima del training ✓ | Mancata verifica che MetaMath non contenga esempi identici |
-| **E-P-04** | Generalizzazione OOD | Zhang et al. (2025) | Una probe su un template non generalizza per forza; claim qualificati come "su questo template" | Risultati template-specific presentati come generali |
+| **E-P-04** | Generalizzazione OOD | Probing methodology | Una probe su un template non generalizza per forza; claim qualificati come "su questo template" | Risultati template-specific presentati come generali |
 
 ### Livello 4 — Geometric/Representational Analysis Specific
 
 | ID | Principio | Fonte | Regola | Segnale di violazione |
 |---|---|---|---|---|
-| **E-G-01** | Interpretazione dell'isotropy | Ethayarajh (2019); Mu & Viswanath (2018) | L'anisotropia è lo stato *normale* degli hidden state, non una struttura semantica né un collasso. ΔIso è differenza relativa, mai misura assoluta; riportare con floor random-Gaussian norm-matched e CI | "matematica più strutturata perché più anisotropa"; ΔIso<0 letto come "feature extraction specializzata" |
+| **E-G-01** | Interpretazione dell'isotropy | Ethayarajh (2019) | L'anisotropia è lo stato *normale* degli hidden state, non una struttura semantica né un collasso. ΔIso è differenza relativa, mai misura assoluta; riportare con floor random-Gaussian norm-matched e CI | "matematica più strutturata perché più anisotropa"; ΔIso<0 letto come "feature extraction specializzata" |
 | **E-G-02** | Interpretazione della CKA | Kornblith et al. (2019); Davari et al. (2022); Cloos et al. (2024) | CKA misura similarità, non qualità. CKA lineare sovrappesa direzioni ad alta varianza → usare **debiased CKA** + Procrustes + leave-k-out + baseline matched-terminal/within-math. La asimmetria posizionale "=" è l'alternativa di default | CKA descritta come "divergenza" senza i quattro controlli e senza baseline di varianza |
-| **E-G-03** | Definizione del layer di emergenza | Shai et al. (2024); Nikankin et al. (2024); Olsson et al. (2022) | "Emergence layer" (def. operativa: primo layer con accuracy >0.7) va esplicitato; in tensione col profilo distribuito ("bag of heuristics"; belief state su più layer). **Preferire il profilo di decodificabilità a un punto singolo** | Emergence layer come punto singolo senza def. operativa né profilo |
-| **E-G-04** | Cambiamento geometrico ≠ cambiamento di capacità | RQ3 limitation | Il drift Frobenius misura cambiamento dei pesi, non delle capacità; correlazione drift↔ΔGSM8K richiede cautela (terze variabili: distribuzione MetaMath vs GSM8K) | Linguaggio causale tra drift e performance |
+| **E-G-03** | Definizione del layer di emergenza | Interpretability literature | "Emergence layer" (def. operativa: primo layer con accuracy >0.7) va esplicitato; in tensione col profilo distribuito (computazione su più layer). **Preferire il profilo di decodificabilità a un punto singolo** | Emergence layer come punto singolo senza def. operativa né profilo |
+| **E-G-04** | Cambiamento geometrico ≠ cambiamento di capacità | RQ4 limitation | Il drift Frobenius misura cambiamento dei pesi, non delle capacità; correlazione drift↔ΔGSM8K richiede cautela (terze variabili: distribuzione MetaMath vs GSM8K) | Linguaggio causale tra drift e performance |
 
 ### Livello 5 — Fine-Tuning & Evaluation Standards
 
 | ID | Principio | Fonte | Regola | Segnale di violazione |
 |---|---|---|---|---|
-| **E-F-01** | Coerenza few-shot | Brown et al. (2020); Cobbe et al. (2021) | GSM8K è tipicamente 5-shot; qui 0-shot → numeri sistematicamente più bassi (~5–15%), da dichiarare | Confronto con la letteratura GSM8K senza dichiarare 0-shot vs 5-shot |
+| **E-F-01** | Coerenza few-shot | Cobbe et al. (2021) | GSM8K è tipicamente 5-shot; qui 0-shot → numeri sistematicamente più bassi (~5–15%), da dichiarare | Confronto con la letteratura GSM8K senza dichiarare 0-shot vs 5-shot |
 | **E-F-02** | Sufficienza delle epoch | Training dynamics | 1 epoch su MetaMath a batch effettivo 32 (8×4) ≈ 12k step; ~3.1M parametri trainable (LoRA r=16, QKV-only). Confrontare il training loss finale con la letteratura | Training loss finale dichiarato buono senza reference |
-| **E-F-03** | Trasparenza sulla quantizzazione | Dettmers et al. (2023) | NF4 introduce degradazione; T16 la misura e va citato coi risultati RQ3 | Risultati RQ3 senza disclosure del baseline NF4 |
+| **E-F-03** | Trasparenza sulla quantizzazione | Dettmers et al. (2023) | NF4 introduce degradazione; T16 la misura e va citato coi risultati RQ4 | Risultati RQ4 senza disclosure del baseline NF4 |
 
 ---
 
 ## 8. Reference Table — claim chiave per paper
 
-*Per ogni paper: claim rilevante + implicazione per la tesi. Le voci marcate **[verificato]** sono state
-controllate via web il 31/05/2026 contro fonte primaria. (Nessuna voce resta non verificata.)*
+*Per ogni paper: claim rilevante + implicazione per la tesi. Limitata ai lavori effettivamente citati nella tesi
+(`bibliography.bib`); i lavori di posizionamento non citati nel `.tex` sono stati rimossi in questa revisione.*
 
 | Paper | Claim rilevante | Implicazione |
 |---|---|---|
 | Belinkov (2022) *Probing Classifiers* | "High probe accuracy does not entail the property is used by the model" | Ogni claim RQ2 qualificato come "linearmente decodificabile" |
-| Hewitt & Liang (2019) *Control Tasks* | Selectivity = acc(task) − acc(control task con label casuali) | La selectivity vera **non è calcolata**; l'evidenza è N-01/N-02, non `ctrl_positive_pred_rate` |
-| Kantamneni & Tegmark (2025) *Language Models Use Trigonometry to Do Addition* (arXiv 2502.00873, MIT) **[verificato]** | I numeri vivono su un'elica generalizzata (Fourier + lineare) dal layer 0; rappresentazione causalmente implicata per addizione **e** sottrazione. **L'elica ha periodi T=[2,5,10,100] + componente lineare (confermato dal paper)** | **Lente primaria per RQ2.** La parità ≈ componente Fourier T=2 (esiste esplicitamente nel paper): testare se la direzione di parità è nello span del T=2; il segno richiede la fase relativa di *entrambi* gli operandi |
-| Nikankin, Reusch, Mueller & Belinkov (2024) *Arithmetic Without Algorithms* (arXiv 2410.21272, Technion; ICLR 2025) **[verificato]** | Aritmetica = euristiche distribuite ("bag of heuristics"), non un algoritmo pulito; la risposta è estraibile con alta accuracy solo dalla posizione finale, dopo i layer tardivi | Giustifica estrazione al "=" e la scelta QKV (attention = trasporto); spinge verso il **profilo** di decodificabilità, non un punto |
-| Stolfo, **Belinkov** & Sachan (2023) *A Mechanistic Interpretation of Arithmetic Reasoning … via Causal Mediation Analysis* (arXiv 2305.15054; EMNLP 2023) **[verificato — autori corretti]** | Evidenza di mediazione causale: l'informazione query-rilevante è trasmessa dai layer iniziali di mid-sequence al token finale via attention | Corrobora l'estrazione al "="; template per claim causali (ablate L, re-probe L+k). *(Correzione: NON "Stolfo, Jin, Shu & Sachan" — vedi §10 #14)* |
 | Kornblith et al. (2019) *CKA* | CKA lineare invariante a trasf. ortogonali e scaling isotropo, **non** anisotropo | `fold_ln` ripiega γ per-feature nei pesi → CKA può shiftare; misurare l'effetto fold_ln (True vs False) |
-| Davari, Horoi, Natik, Lajoie, Wolf & Belilovsky (2022) *Reliability of CKA as a Similarity Measure* (arXiv 2210.16156; ICLR 2023) **[verificato]** + Cloos, Siegel, Brincat, Miller & Cueva (2024) *Differentiable optimization of similarity scores between models and brains* (ICLR 2024 Workshop on Representational Alignment) **[verificato]** | CKA lineare sovrappesa direzioni ad alta varianza, sensibile a outlier, manipolabile (i punteggi di similarità si possono ottimizzare verso valori arbitrari) senza cambiamento funzionale, nessuna soglia universale | Usare debiased CKA + leave-k-out + Procrustes; riportare più metriche; la posizione "=" è il sospetto principale ad alta varianza |
+| Davari, Horoi, Natik, Lajoie, Wolf & Belilovsky (2022) *Reliability of CKA as a Similarity Measure* + Cloos, Siegel, Brincat, Miller & Cueva (2024) *Differentiable optimization of similarity scores* | CKA lineare sovrappesa direzioni ad alta varianza, sensibile a outlier, manipolabile senza cambiamento funzionale, nessuna soglia universale | Usare debiased CKA + leave-k-out + Procrustes; riportare più metriche; la posizione "=" è il sospetto principale ad alta varianza |
 | Ethayarajh (2019) *How Contextual…* | Embedding contestuali anisotropi di default | ΔIso<0 atteso, non collasso; mai letto come "feature extraction" (E-G-01) |
-| Shai, Marzen, Teixeira, Oldenziel & Riechers (2024) *Belief State Geometry* (NeurIPS 2024, arXiv 2405.15943) **[verificato]** | Le belief state sono distribuite su più layer — non c'è un "layer della conoscenza" singolo | Giustifica `all_layers`; tensione col concetto di emergence_layer singolo *(correzione: NON "Lindsey et al.")* |
-| Quirke & Barez (2023) *Understanding Addition in Transformers* (arXiv 2310.13121) **[verificato]** | Transformer **a un layer** addestrato *from scratch*; "double staircase" che cammina sulle posizioni di **digit-token** | Gli operandi della tesi sono **single-token** → nessuno staircase. **Solo lassamente analogo, MAI un confronto per i layer di emergenza.** *(correzione: non ICLR 2024)* |
-| Meng et al. (2022) *ROME* | Storage fattuale all'ultimo subject token, MLP intermedie | **Solo per contrasto**: spiega perché QLoRA MLP-frozen è scoped fuori dagli edit di storage fattuale. NON giustifica l'estrazione al "=" (categoria diversa) |
-| Tenney et al. (2019) *BERT rediscovers the NLP pipeline* | Proprietà linguistiche diverse emergono a layer diversi in modo consistente | Pattern compatibile con RQ2 (sign nei layer iniziali, parity negli intermedi) |
-| Olsson et al. (2022) *Induction Heads* | Componenti specifici mediano comportamenti specifici | Il nostro approccio è correlativo, non mechanistic — limite da discutere |
 | Dettmers et al. (2023) *QLoRA* | NF4 recupera la **task performance** a 16-bit; eguagliare il full FT richiede adapter su **tutti** i layer lineari (QKV-only sotto-performa). **Non** fornisce soglie di Frobenius di rappresentazione | Le soglie T16 `<3%/<5%` sono **nostre**, non di Dettmers; il setup QKV-only è atteso *capping* dei guadagni → regime ristretto per la correlazione drift↔GSM8K |
-| Biderman et al. (2023) *Pythia* (arXiv 2304.01373; ICML 2023) **[verificato]** | 154 checkpoint pubblici per ciascuno dei 16 modelli, dataloader ricostruibili | Risorsa inutilizzata: sondare la traiettoria di pretraining (quando emergono sign/parity) è l'esperimento Pythia canonico (collega a grokking, Nanda et al. 2023) |
-| Pimentel et al. (2020) *Information-theoretic probing* | MDL più robusto dell'accuracy | Non implementato — limite (opzionale: online-code MDL) |
-| Cobbe et al. (2021) *GSM8K* | Anche GPT-3 175B fatica su GSM8K; fine-tuned 175B + verifier ≈ 55%. *(Il 58.1% spesso citato è CoT prompting, Wei et al. 2022 / scala PaLM — NON GPT-3 175B 5-shot.)* | Per un base model 1.4B in 0-shot il risultato atteso è ~0% (baseline 0.0 corretto) |
-| Warstadt et al. (2019) *BLiMP* | 1000 coppie per sub-dataset come standard | Noi 500 coppie: sotto lo standard (vincoli computazionali). **BLiMP fornisce solo il razionale minimal-pair, NON soglie di accuracy** |
-| Yu et al. (2023) *MetaMath* | Bootstrap di domande matematiche da GSM8K/MATH | Possibile overlap distribuzionale MetaMath↔GSM8K → confound da dichiarare in RQ3 |
+| Biderman et al. (2023) *Pythia* | 154 checkpoint pubblici per ciascuno dei 16 modelli, dataloader ricostruibili | Risorsa inutilizzata: sondare la traiettoria di pretraining (quando emergono sign/parity) sarebbe l'esperimento Pythia canonico |
+| Cobbe et al. (2021) *GSM8K* | Per un base model 1.4B in 0-shot il risultato atteso è ~0%; lo standard di letteratura è 5-shot | Baseline 0.0 corretto e atteso; dichiarare 0-shot vs 5-shot |
+| Yu et al. (2023) *MetaMath* | Bootstrap di domande matematiche da GSM8K/MATH | Possibile overlap distribuzionale MetaMath↔GSM8K → confound da dichiarare in RQ3/RQ4 |
 
 ---
 
 ## 9. Reference-class da NON usare come benchmark
 
-- **ROME (Meng 2022) / MEMIT (Meng 2023):** localizzano il *factual recall* nelle MLP intermedie. Non
-  applicabile: aritmetica ≠ fatti; estrazione al "=" (operatore), non all'ultimo subject token; RQ3 congela le
-  MLP che ROME implica. Non confrontare `l*` con un range "8–16 MLP" — sarebbe un errore di categoria. Citare
-  ROME solo per contrasto.
-- **Quirke & Barez (2023):** transformer a un layer, operandi multi-digit-token. La tesi ha operandi single-token
-  → nessuno staircase. Lassamente analogo, mai un punto di confronto per i layer di emergenza. *(Nota: non
-  esiste un paper Quirke & Barez su musica/chiavi; se compare una citazione del genere è fabbricata.)*
-- **BLiMP (Warstadt 2020):** ispira il design minimal-pair ma non fornisce soglie di accuracy di probing.
+La codebase non confronta i propri risultati con lavori di *factual recall* (classe ROME/MEMIT, storage nelle MLP intermedie) né con transformer toy a un singolo layer su operandi multi-digit-token: categorie diverse per task, punto di estrazione e architettura, quindi mai un baseline valido per i layer di emergenza di questa tesi.
 
 ---
 
@@ -324,21 +376,18 @@ controllate via web il 31/05/2026 contro fonte primaria. (Nessuna voce resta non
 
 | # | Voce | README diceva | Guida / ground truth diceva | Risoluzione |
 |---|---|---|---|---|
-| 1 | Regolarizzazione probe | `C = 1.0` | spec `config_rq2.yaml`: **C = 10.0** | Corretto a **10.0** (SSOT = spec) |
+| 1 | Regolarizzazione probe | `C = 1.0` | spec `config_rq2.yaml`: **C = 1.0** | Allineato a **1.0** (SSOT = `config_rq2.yaml`, valore corrente; la precedente nota a 10.0 è superata) |
 | 2 | Campioni bootstrap | `N = 2000` | spec: **1000** | Corretto a **1000** |
-| 3 | Selectivity | "riportata" come acc(task)−acc(ctrl) | Ground truth: **non calcolata**; esiste `ctrl_positive_pred_rate` (sanity) + N-01/N-02 | Riformulato: selectivity H&L non calcolata; sanity ≠ selectivity |
+| 3 | Selectivity | "riportata" come acc(task)−acc(ctrl) | Ground truth: **non calcolata**; esiste `ctrl_positive_pred_rate` (sanity) + N-01/N-02 | Riformulato: selectivity non calcolata; sanity ≠ selectivity |
 | 4 | Nome confound sign | "Confound **T02**" | spec: **N-01** | Standardizzato a **N-01** (T02 = alias) |
 | 5 | Layer 0 | Guida: "layer 0 = layer di **embedding**" | `layer_00` = `blocks.0.hook_resid_post` = **output del blocco 0** | Corretto: above-chance al layer_00 è **atteso**, non bug |
-| 6 | Quirke & Barez | usato come baseline / "ICLR 2024" / staircase compatibile | **[verificato]** arXiv 2310.13121, 1-layer toy, digit-token | Rimosso come baseline; declassato a "lassamente analogo" |
-| 7 | Belief state geometry | (assente in README) | Guida: "**Lindsey et al. (2024)**" | **[verificato]** → **Shai et al. (NeurIPS 2024)**, arXiv 2405.15943 |
-| 8 | GSM8K GPT-3 | (assente) | Guida: "GPT-3 175B 5-shot = **58.1%**" | **[verificato]** conflazione: 58.1% è CoT prompting (Wei 2022); corretto |
+| 8 | GSM8K GPT-3 | (assente) | Guida: "GPT-3 175B 5-shot = **58.1%**" | Conflazione corretta: il 58.1% è CoT prompting, non GPT-3 175B 5-shot |
 | 9 | Soglie Frobenius | (assente) | Guida: Dettmers "Frobenius rel. <3%" | Dettmers non fornisce soglie di rappresentazione; soglie T16 = **nostre** |
-| 10 | Estrazione al "=" | giustificata via ROME | ROME = factual recall (categoria diversa) | Giustificazione → Nikankin/Stolfo; ROME solo per contrasto |
 | 11 | Robustezza CKA | (assente in entrambi) | Ground-Truth Map: debiased + Procrustes + leave-k-out + matched-terminal | Aggiunto a RQ1 ed E-G-02 |
 | 12 | Asimmetria posizionale | (assente in entrambi) | spec + Ground-Truth Map | Aggiunta come confound primario CKA e come limite dichiarato |
-| 13 | Lente arithmetic regime-matched | (assente in entrambi) | Kantamneni & Tegmark, Nikankin, Stolfo | Aggiunti alla reference table |
-| 14 | **Autori di Stolfo et al. 2023** | (assente) | Ground-Truth Map: "Stolfo, **Jin, Shu** & Sachan" | **[verificato 31/05/2026]** Errore nella mappa. arXiv 2305.15054 (EMNLP 2023) è **Stolfo, Belinkov & Sachan**. "Jin/Shu" appartengono a un *altro* paper Stolfo 2023 (*A causal framework to quantify the robustness…*, ACL 2023: Stolfo, Jin, Shridhar, Schölkopf, Sachan — e "Shu" è "Shridhar" mutilato). Corretto in §8 |
-| 15 | Verifica delle citazioni importate dalla mappa | marcate "da verificare" | — | **[fatto 31/05/2026]** Kantamneni & Tegmark (2502.00873), Nikankin (2410.21272), Davari (2210.16156), Biderman (2304.01373) confermate accurate; Stolfo (2305.15054) con autori corretti (#14); Cloos et al. 2024 (Cloos, Siegel, Brincat, Miller & Cueva, ICLR 2024 Workshop on Representational Alignment) confermata. **Nessuna citazione resta non verificata** |
+
+*(Le righe 6, 7, 10, 13, 14, 15 della versione precedente documentavano correzioni su lavori di letteratura ora
+rimossi dal §8/§9 in questa revisione; sono state eliminate per coerenza.)*
 
 ---
 
@@ -347,10 +396,10 @@ controllate via web il 31/05/2026 contro fonte primaria. (Nessuna voce resta non
 | Limite | Tipo | Riferimento |
 |---|---|---|
 | Singolo modello (Pythia-1.4B) | Scope | R-I-02 |
-| Singolo dominio/3 template, [10,50] | Scope / Generalizzabilità | E-P-04; Zhang et al. 2025 |
+| Singolo dominio/3 template, [10,50] | Scope / Generalizzabilità | E-P-04 |
 | Approccio correlativo, non causale | Epistemologico | E-O-01, E-G-04 |
 | Estrazione all'aspettativa, non al risultato | Metodologico | E-P-02 |
-| QLoRA QKV-only, MLP congelate | Strutturale | RQ3 scope |
+| QLoRA QKV-only, MLP congelate | Strutturale | RQ3/RQ4 scope |
 | 0-shot GSM8K vs 5-shot standard (~5–15% più basso) | Comparabilità | E-F-01 |
 | Overlap distribuzionale MetaMath/GSM8K | Contaminazione | Yu et al. 2023 |
 | Pool coverage ~60% — test set non OOD | Generalizzabilità | Dataset §4 |
@@ -376,7 +425,7 @@ guida.
 1. **Decodificabilità del segno ai layer iniziali** (incluso `layer_00`): shortcut di magnitudine vs confronto
    genuino? *NB: `layer_00` è l'output del blocco 0 — l'attention ha già mischiato i due operandi, quindi
    above-chance è atteso e NON prova "info nell'input".* Da risolvere con N-01 (R² op1, cosine, logit-Pearson)
-   prima di qualsiasi claim. Riferimento: Tenney et al. (2019) per il pattern per-layer.
+   prima di qualsiasi claim.
 2. **Confound N-01 con misura diretta:** la cosine dei pesi è indiretta. Esiste già il test diretto
    `Pearson(logit sign frozen, op1)` e R² di op1 — vanno *riportati con BH*, non solo la cosine.
 3. **Robustezza della divergenza CKA inter-categoria:** sopravvive a debiased + matched-terminal +
