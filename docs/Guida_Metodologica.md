@@ -3,17 +3,6 @@
 **Tesi di Laurea Triennale · Bonagura N46007216 · Università degli Studi di Napoli Federico II**
 **Corso di Laurea in Informatica · A.A. 2025/2026 · Modello: Pythia-1.4B (EleutherAI)**
 
-> Documento unico che assorbe `README_metodologico.md` (front matter della tesi) e `Guida_Metodologica.md`
-> (apparato di peer-review). Dove le due fonti divergevano tra loro o contraddicevano la ground truth del
-> progetto (spec `config_rq2.yaml`, Ground-Truth Map, architettura GPT-NeoX), il conflitto è stato risolto e
-> annotato. Le correzioni e le verifiche di citazione sono tracciate nel **§10 — Registro di riconciliazione**.
->
-> **Uso.** Documento di *reference interno* per il workflow human/AI (leggibile su Git, non un deliverable
-> formale). Prescrittivo e orientato ai principi, senza risultati numerici. Le citazioni sono limitate a quelle
-> effettivamente usate nella codebase e nella tesi (`.tex` e `bibliography.bib` sono allineati). La numerazione
-> delle Research Question segue lo schema definitivo a cinque RQ (RQ1 geometria, RQ2 probing, RQ3 dinamica della
-> geometria nel fine-tuning, RQ4 drift di Frobenius, RQ5 determinizzazione).
-
 ---
 
 ## 1. Posizionamento epistemologico
