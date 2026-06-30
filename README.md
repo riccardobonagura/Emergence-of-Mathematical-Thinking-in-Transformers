@@ -227,7 +227,7 @@ All stages read one YAML. `configs/config_rq2.yaml` is the production config; `c
 |-----|---------|
 | `model_name` | Profile key into `get_model_profile()` (`pythia-1.4b` → `EleutherAI/pythia-1.4b`, QKV target modules, batch 32) |
 | `seed` | Global base seed; all RNG flows through `get_seed(seed, purpose)` |
-| `train_split`, `C`, `solver`, `max_iter` | Probe training (note: `C=10.0`, selected from a C-sweep that showed accuracy ~invariant over {0.01…10.0}) |
+| `train_split`, `C`, `solver`, `max_iter` | Probe training (note: `C=1.0`, selected from a C-sweep that showed accuracy ~invariant over {0.01…10.0}) |
 | `properties` | Per-probe spec (`type`, `label_field`, `category`, `class_names`) — validated against the canonical `PropConfig` schema |
 | `n_permutation_tests`, `bootstrap_n_samples`, `bootstrap_ci` | Statistical rigour for RQ2 |
 | `total_training_steps` | 12343 — terminal step, fixes the RQ3/RQ4/RQ5/GSM8K step axis `{0, 2500, 5000, 7500, 10000, 12343}` |
